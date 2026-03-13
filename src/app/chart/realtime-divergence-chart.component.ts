@@ -22,6 +22,7 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  type LogicalRange,
   type UTCTimestamp,
 } from "lightweight-charts";
 import {
@@ -96,6 +97,7 @@ export class RealtimeDivergenceChartComponent
   private guideLines: Array<{ series: AnySeries; line: unknown }> = [];
   private connection: signalR.HubConnection | null = null;
   private candleEventHandler: ((evt: any) => void) | null = null;
+  private visibleLogicalRangeHandler: ((range: LogicalRange | null) => void) | null = null;
   private tfSnapshotRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private candles: Candle[] = [];
   private articleSeedCandles: Candle[] = [];
@@ -113,6 +115,10 @@ export class RealtimeDivergenceChartComponent
   private readonly initialTfSnapshotCount = 300;
   private readonly refreshTfSnapshotCount = 5;
   private readonly indicatorWarmupLimit = 300;
+  private readonly defaultRightOffsetBars = 3;
+  private readonly realtimeFollowThresholdBars = 1.5;
+  private followRealtime = true;
+  private suppressVisibleRangeTracking = false;
 
   private get hubTimeOffsetSeconds(): number {
     return Math.trunc((Number(this.hubTimeOffsetHours) || 0) * 3600);
@@ -164,7 +170,7 @@ export class RealtimeDivergenceChartComponent
       timeScale: {
         rightBarStaysOnScroll: true,
         barSpacing: 10,
-        rightOffset: 3,
+        rightOffset: this.defaultRightOffsetBars,
         borderVisible: false,
         tickMarkFormatter: (time: unknown) => this.formatAxisDate(time),
       },
@@ -207,6 +213,8 @@ export class RealtimeDivergenceChartComponent
     chart.priceScale("right", 2).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
     chart.priceScale("right", 3).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
     this.chartRef = chart;
+    this.visibleLogicalRangeHandler = (range: LogicalRange | null) => this.handleVisibleLogicalRangeChange(range);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(this.visibleLogicalRangeHandler);
     this.createGuideLines();
   }
 
@@ -219,6 +227,7 @@ export class RealtimeDivergenceChartComponent
       this.candles = [...this.articleSeedCandles];
       this.error = null;
       this.autoFitApplied = false;
+      this.followRealtime = true;
       this.renderMarketData();
     } else if (!this.active) {
       this.candles = [];
@@ -368,10 +377,10 @@ export class RealtimeDivergenceChartComponent
     this.macdSignalSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.signal })));
     this.macdLineSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.macd })));
     if (!this.autoFitApplied) {
-      this.chartRef.timeScale().fitContent();
+      this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().fitContent());
       this.autoFitApplied = true;
-    } else if (this.active) {
-      requestAnimationFrame(() => this.chartRef?.timeScale().scrollToRealTime());
+    } else if (this.active && this.followRealtime) {
+      requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
     }
   }
 
@@ -400,8 +409,7 @@ export class RealtimeDivergenceChartComponent
     const stop = this.parsePrice(this.stopOrder);
     if (entry === null && target === null && stop === null) return;
     const tfSeconds = this.timeframeToSeconds(this.normalizeDisplayTimeframe(this.timeframe) || "M5");
-    const startIndex = Math.max(this.candles.length - 10, 0);
-    const startTime = this.candles[startIndex].time;
+    const startTime = this.getTradeLevelsStartTime();
     const endTime = this.getTradeLevelsEndTime(tfSeconds);
     if (entry !== null && target !== null) {
       const series = this.chartRef.addSeries(BaselineSeries, {
@@ -604,7 +612,13 @@ export class RealtimeDivergenceChartComponent
 
   private getTradeLevelsEndTime(tfSeconds: number): number {
     const lastCandleTime = this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
-    return lastCandleTime + tfSeconds * 15;
+    return lastCandleTime + tfSeconds * this.defaultRightOffsetBars;
+  }
+
+  private getTradeLevelsStartTime(): number {
+    if (this.seededHistoryEndTime !== null) return this.seededHistoryEndTime;
+    if (this.articleSeedCandles.length) return this.articleSeedCandles[this.articleSeedCandles.length - 1].time;
+    return this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
   }
 
   private formatAxisDate(time: unknown): string {
@@ -788,6 +802,10 @@ export class RealtimeDivergenceChartComponent
 
   private destroyChart(): void {
     if (!this.chartRef) return;
+    if (this.visibleLogicalRangeHandler) {
+      this.chartRef.timeScale().unsubscribeVisibleLogicalRangeChange(this.visibleLogicalRangeHandler);
+      this.visibleLogicalRangeHandler = null;
+    }
     this.chartRef.remove();
     this.chartRef = null;
     this.priceSeries = null;
@@ -797,6 +815,23 @@ export class RealtimeDivergenceChartComponent
     this.macdHistogramSeries = null;
     this.macdSignalSeries = null;
     this.macdLineSeries = null;
+  }
+
+  private handleVisibleLogicalRangeChange(range: LogicalRange | null): void {
+    if (this.suppressVisibleRangeTracking || !range || !this.candles.length) return;
+    const realtimeLogicalTo = this.candles.length - 1 + this.defaultRightOffsetBars;
+    this.followRealtime = range.to >= realtimeLogicalTo - this.realtimeFollowThresholdBars;
+  }
+
+  private runWithSuppressedVisibleRangeTracking(action: () => void): void {
+    this.suppressVisibleRangeTracking = true;
+    try {
+      action();
+    } finally {
+      requestAnimationFrame(() => {
+        this.suppressVisibleRangeTracking = false;
+      });
+    }
   }
 
   private parsePrice(value: string | null): number | null {
