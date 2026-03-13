@@ -1,0 +1,50 @@
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.realtime-chart {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 210px;
+}
+
+.realtime-chart__canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 210px;
+}
+
+.realtime-chart__pan-blocker {
+  display: none;
+}
+
+.realtime-chart__status {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #374151;
+  font-size: 12px;
+}
+
+.realtime-chart__status--error {
+  color: #b42318;
+}
+
+.realtime-chart__pan-blocker {
+  display: block;
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  top: 0;
+  right: 56px;
+  bottom: 24px;
+  background: transparent;
+  touch-action: pan-y;
+}

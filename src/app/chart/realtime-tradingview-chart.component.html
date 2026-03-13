@@ -1,0 +1,15 @@
+<div class="realtime-chart">
+  <div
+    class="realtime-chart__status"
+    *ngIf="!connected && !loading && !error"
+  >
+    Connecting to market data...
+  </div>
+  <div class="realtime-chart__status" *ngIf="loading">Loading chart...</div>
+  <div class="realtime-chart__status realtime-chart__status--error" *ngIf="error">
+    Error: {{ error }}
+  </div>
+
+  <div #chartContainer class="realtime-chart__canvas"></div>
+  <div class="realtime-chart__pan-blocker"></div>
+</div>
