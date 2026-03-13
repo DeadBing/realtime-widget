@@ -167,6 +167,12 @@ export class RealtimeDivergenceChartComponent
       },
       rightPriceScale: { visible: true, borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.06 } },
       leftPriceScale: { visible: false },
+      handleScroll: {
+        mouseWheel: false,
+        pressedMouseMove: false,
+        horzTouchDrag: false,
+        vertTouchDrag: false,
+      },
       timeScale: {
         rightBarStaysOnScroll: true,
         barSpacing: 10,
