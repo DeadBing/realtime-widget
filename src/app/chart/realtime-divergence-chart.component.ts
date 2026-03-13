@@ -175,6 +175,7 @@ export class RealtimeDivergenceChartComponent
       },
       localization: {
         locale: "ru-RU",
+        dateFormat: "dd.MM.yyyy",
         timeFormatter: (time: unknown) => this.formatHoverDate(time),
       },
       grid: {
@@ -183,10 +184,22 @@ export class RealtimeDivergenceChartComponent
       },
       rightPriceScale: { visible: true, borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.06 } },
       leftPriceScale: { visible: false },
+      handleScale: {
+        mouseWheel: false,
+        pinch: true,
+        axisPressedMouseMove: {
+          time: true,
+          price: true,
+        },
+        axisDoubleClickReset: {
+          time: true,
+          price: true,
+        },
+      },
       handleScroll: {
         mouseWheel: false,
         pressedMouseMove: false,
-        horzTouchDrag: false,
+        horzTouchDrag: true,
         vertTouchDrag: false,
       },
       timeScale: {
@@ -194,7 +207,8 @@ export class RealtimeDivergenceChartComponent
         barSpacing: 10,
         rightOffset: this.defaultRightOffsetBars,
         borderVisible: false,
-        tickMarkFormatter: (time: unknown) => this.formatAxisDate(time),
+        timeVisible: true,
+        secondsVisible: false,
       },
       crosshair: {
         vertLine: { width: 1, color: this.tradingViewPalette.crosshair },
@@ -667,22 +681,27 @@ export class RealtimeDivergenceChartComponent
     return this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
   }
 
-  private formatAxisDate(time: unknown): string {
-    return this.formatChartDate(time, false);
-  }
-
   private formatHoverDate(time: unknown): string {
-    return this.formatChartDate(time, true);
+    return this.formatChartDate(time);
   }
 
-  private formatChartDate(time: unknown, includeYear: boolean): string {
+  private formatChartDate(time: unknown): string {
     const epochSeconds = this.extractChartEpochSeconds(time);
     if (epochSeconds === null) return "";
     const date = new Date(epochSeconds * 1000);
     const day = `${date.getUTCDate()}`.padStart(2, "0");
     const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
-    if (!includeYear) return `${day}.${month}`;
-    return `${day}.${month}.${date.getUTCFullYear()}`;
+    const year = date.getUTCFullYear();
+    if (this.timeframeSeconds >= 86400) {
+      return `${day}.${month}.${year}`;
+    }
+    const hours = `${date.getUTCHours()}`.padStart(2, "0");
+    const minutes = `${date.getUTCMinutes()}`.padStart(2, "0");
+    if (this.timeframeSeconds >= 60) {
+      return `${day}.${month}.${year} ${hours}:${minutes}`;
+    }
+    const seconds = `${date.getUTCSeconds()}`.padStart(2, "0");
+    return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
   }
 
   private extractChartEpochSeconds(time: unknown): number | null {
