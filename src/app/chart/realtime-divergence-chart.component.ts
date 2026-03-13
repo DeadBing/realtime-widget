@@ -117,6 +117,19 @@ export class RealtimeDivergenceChartComponent
   private readonly indicatorWarmupLimit = 300;
   private readonly defaultRightOffsetBars = 3;
   private readonly realtimeFollowThresholdBars = 1.5;
+  private readonly tradingViewPalette = {
+    background: "#ffffff",
+    text: "#374151",
+    grid: "rgba(0, 0, 0, 0.08)",
+    crosshair: "rgba(55, 65, 81, 0.25)",
+    up: "#26a69a",
+    down: "#ef5350",
+    blue: "#2962ff",
+    orange: "#ff6d00",
+    macdMain: "#7f8c8d",
+    macdPositive: "rgba(38, 166, 154, 0.85)",
+    macdNegative: "rgba(239, 83, 80, 0.85)",
+  } as const;
   private followRealtime = true;
   private suppressVisibleRangeTracking = false;
 
@@ -156,14 +169,17 @@ export class RealtimeDivergenceChartComponent
     const chart = createChart(this.chartContainerRef.nativeElement, {
       autoSize: true,
       height: this.height,
-      layout: { background: { type: ColorType.Solid, color: "#ffffff" }, textColor: "#111827" },
+      layout: {
+        background: { type: ColorType.Solid, color: this.tradingViewPalette.background },
+        textColor: this.tradingViewPalette.text,
+      },
       localization: {
         locale: "ru-RU",
         timeFormatter: (time: unknown) => this.formatHoverDate(time),
       },
       grid: {
-        vertLines: { visible: true, color: "rgba(17,24,39,0.08)" },
-        horzLines: { visible: true, color: "rgba(17,24,39,0.08)" },
+        vertLines: { visible: true, color: this.tradingViewPalette.grid },
+        horzLines: { visible: true, color: this.tradingViewPalette.grid },
       },
       rightPriceScale: { visible: true, borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.06 } },
       leftPriceScale: { visible: false },
@@ -181,8 +197,8 @@ export class RealtimeDivergenceChartComponent
         tickMarkFormatter: (time: unknown) => this.formatAxisDate(time),
       },
       crosshair: {
-        vertLine: { width: 1, color: "rgba(17,24,39,0.25)" },
-        horzLine: { width: 1, color: "rgba(17,24,39,0.25)" },
+        vertLine: { width: 1, color: this.tradingViewPalette.crosshair },
+        horzLine: { width: 1, color: this.tradingViewPalette.crosshair },
       },
     });
     while (chart.panes().length < 4) chart.addPane(true);
@@ -191,30 +207,48 @@ export class RealtimeDivergenceChartComponent
     chart.panes()[2]?.setStretchFactor(2);
     chart.panes()[3]?.setStretchFactor(2.5);
     this.priceSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#ffffff",
-      downColor: "#111111",
-      borderUpColor: "#111111",
-      borderDownColor: "#111111",
-      wickUpColor: "#111111",
-      wickDownColor: "#111111",
+      upColor: this.tradingViewPalette.up,
+      downColor: this.tradingViewPalette.down,
+      borderUpColor: this.tradingViewPalette.up,
+      borderDownColor: this.tradingViewPalette.down,
+      wickUpColor: this.tradingViewPalette.up,
+      wickDownColor: this.tradingViewPalette.down,
       lastValueVisible: true,
       priceLineVisible: false,
     }, 0);
     this.stochasticKSeries = chart.addSeries(LineSeries, {
-      color: "#0f8f8a", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+      color: this.tradingViewPalette.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
       autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
     }, 1);
     this.stochasticDSeries = chart.addSeries(LineSeries, {
-      color: "#d32f2f", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+      color: this.tradingViewPalette.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
       autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
     }, 1);
     this.rsiSeries = chart.addSeries(LineSeries, {
-      color: "#2f80ff", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
+      color: this.tradingViewPalette.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
       autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
     }, 2);
-    this.macdHistogramSeries = chart.addSeries(HistogramSeries, { base: 0, color: "#444444", lastValueVisible: false, priceLineVisible: false }, 3);
-    this.macdSignalSeries = chart.addSeries(LineSeries, { color: "#d32f2f", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, 3);
-    this.macdLineSeries = chart.addSeries(LineSeries, { color: "#9ca3af", lineWidth: 2, lineStyle: LineStyle.Dotted, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, 3);
+    this.macdHistogramSeries = chart.addSeries(HistogramSeries, {
+      base: 0,
+      color: this.tradingViewPalette.macdPositive,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    }, 3);
+    this.macdSignalSeries = chart.addSeries(LineSeries, {
+      color: this.tradingViewPalette.orange,
+      lineWidth: 2,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      pointMarkersVisible: false,
+    }, 3);
+    this.macdLineSeries = chart.addSeries(LineSeries, {
+      color: this.tradingViewPalette.macdMain,
+      lineWidth: 2,
+      lineStyle: LineStyle.Dotted,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      pointMarkersVisible: false,
+    }, 3);
     chart.priceScale("right", 1).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
     chart.priceScale("right", 2).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
     chart.priceScale("right", 3).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
@@ -379,7 +413,13 @@ export class RealtimeDivergenceChartComponent
     const rsi = this.filterIndicatorSeriesToVisibleRange(calculateRsiSeries(indicatorCandles, 14));
     this.rsiSeries.setData(rsi.map((p) => ({ time: this.toUtc(p.time), value: p.value })));
     const macd = this.filterIndicatorSeriesToVisibleRange(calculateMacdSeries(indicatorCandles, 12, 29, 9));
-    this.macdHistogramSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.histogram, color: p.histogram >= 0 ? "#444444" : "#666666" })));
+    this.macdHistogramSeries.setData(
+      macd.map((p) => ({
+        time: this.toUtc(p.time),
+        value: p.histogram,
+        color: p.histogram >= 0 ? this.tradingViewPalette.macdPositive : this.tradingViewPalette.macdNegative,
+      })),
+    );
     this.macdSignalSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.signal })));
     this.macdLineSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.macd })));
     if (!this.autoFitApplied) {
