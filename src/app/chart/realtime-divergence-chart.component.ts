@@ -29,11 +29,27 @@ import {
   calculateMacdSeries,
   calculateRsiSeries,
   calculateStochasticSeries,
-  type IndicatorCandle,
 } from "./divergence-indicators";
 import { QuotesHubConnectionService } from "./quotes-hub-connection.service";
+import {
+  type Candle,
+  toUtc,
+  normalizeCandle,
+  normalizeTfCandle,
+  normalizeCandles,
+  mergeCandles,
+  updateLastTfCandle,
+  upsertTfCandle,
+  normalizeDisplayTimeframe,
+  toHubTimeframe,
+  timeframeToSeconds,
+  normalizeSymbol,
+  normalizeSource,
+  inferPrecision,
+  parsePrice,
+  stringifyError,
+} from "./chart-utils";
 
-type Candle = IndicatorCandle;
 type AnySeries =
   | ISeriesApi<"Candlestick">
   | ISeriesApi<"Line">
@@ -45,8 +61,9 @@ type TrendLine = {
   style: "solid" | "dot";
   rayRight: boolean;
   paneIndex: number;
-  p1: { time: number; value: number };
-  p2: { time: number; value: number };
+  p1: { barIdx: number; value: number };
+  p2: { barIdx: number; value: number };
+  slopePerBar: number;
 };
 
 @Component({
@@ -99,6 +116,7 @@ export class RealtimeDivergenceChartComponent
   private candleEventHandler: ((evt: any) => void) | null = null;
   private visibleLogicalRangeHandler: ((range: LogicalRange | null) => void) | null = null;
   private tfSnapshotRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private removeReconnectedListener: (() => void) | null = null;
   private candles: Candle[] = [];
   private articleSeedCandles: Candle[] = [];
   private indicatorWarmupCandles: Candle[] = [];
@@ -106,12 +124,15 @@ export class RealtimeDivergenceChartComponent
   private seededHistoryEndTime: number | null = null;
   private viewInitialized = false;
   private autoFitApplied = false;
+  private pricePrecisionApplied = false;
+  private tradeLevelsRendered = false;
   private currentSymbol = "";
   private currentSource = "";
-  private hubTimeframe = "";
-  private timeframeSeconds = 300;
+  private hubTf = "";
+  private tfSeconds = 300;
   private currentKey = "";
   private syncToken = 0;
+  private lastProcessed1sTime: number | null = null;
   private readonly initialTfSnapshotCount = 300;
   private readonly refreshTfSnapshotCount = 5;
   private readonly indicatorWarmupLimit = 300;
@@ -152,7 +173,10 @@ export class RealtimeDivergenceChartComponent
     if (changes["height"] && this.chartRef) this.chartRef.applyOptions({ height: this.height });
     if (changes["initialCandles"]) this.seedInitialCandles();
     if (changes["trendLines"] || changes["objects"] || changes["timeframe"]) this.renderTrendlines();
-    if (changes["entryPrice"] || changes["takeProfit"] || changes["stopOrder"] || changes["timeframe"] || changes["initialCandles"]) this.renderTradeLevels();
+    if (changes["entryPrice"] || changes["takeProfit"] || changes["stopOrder"] || changes["timeframe"] || changes["initialCandles"]) {
+      this.tradeLevelsRendered = false;
+      this.renderTradeLevels();
+    }
     if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"] || changes["hubTimeOffsetHours"]) void this.syncRealtime();
   }
 
@@ -164,117 +188,67 @@ export class RealtimeDivergenceChartComponent
     this.destroyChart();
   }
 
+  // ── Chart setup ────────────────────────────────────────────────────────
+
   private createChart(): void {
     if (!this.chartContainerRef?.nativeElement) return;
+    const pal = this.tradingViewPalette;
     const chart = createChart(this.chartContainerRef.nativeElement, {
       autoSize: true,
       height: this.height,
-      layout: {
-        background: { type: ColorType.Solid, color: this.tradingViewPalette.background },
-        textColor: this.tradingViewPalette.text,
-      },
+      layout: { background: { type: ColorType.Solid, color: pal.background }, textColor: pal.text },
       localization: {
         locale: "ru-RU",
         dateFormat: "dd.MM.yyyy",
         timeFormatter: (time: unknown) => this.formatHoverDate(time),
       },
       grid: {
-        vertLines: { visible: true, color: this.tradingViewPalette.grid },
-        horzLines: { visible: true, color: this.tradingViewPalette.grid },
+        vertLines: { visible: true, color: pal.grid },
+        horzLines: { visible: true, color: pal.grid },
       },
       rightPriceScale: { visible: true, borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.06 } },
       leftPriceScale: { visible: false },
-      handleScale: {
-        mouseWheel: false,
-        pinch: true,
-        axisPressedMouseMove: {
-          time: true,
-          price: true,
-        },
-        axisDoubleClickReset: {
-          time: true,
-          price: true,
-        },
-      },
-      handleScroll: {
-        mouseWheel: false,
-        pressedMouseMove: false,
-        horzTouchDrag: true,
-        vertTouchDrag: false,
-      },
-      timeScale: {
-        rightBarStaysOnScroll: true,
-        barSpacing: 10,
-        rightOffset: this.defaultRightOffsetBars,
-        borderVisible: false,
-        timeVisible: true,
-        secondsVisible: false,
-      },
-      crosshair: {
-        vertLine: { width: 1, color: this.tradingViewPalette.crosshair },
-        horzLine: { width: 1, color: this.tradingViewPalette.crosshair },
-      },
+      handleScale: { mouseWheel: false, pinch: true, axisPressedMouseMove: { time: true, price: true }, axisDoubleClickReset: { time: true, price: true } },
+      handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: true, vertTouchDrag: false },
+      timeScale: { rightBarStaysOnScroll: true, barSpacing: 10, rightOffset: this.defaultRightOffsetBars, borderVisible: false, timeVisible: true, secondsVisible: false },
+      crosshair: { vertLine: { width: 1, color: pal.crosshair }, horzLine: { width: 1, color: pal.crosshair } },
     });
+
     while (chart.panes().length < 4) chart.addPane(true);
     chart.panes()[0]?.setStretchFactor(6);
     chart.panes()[1]?.setStretchFactor(2);
     chart.panes()[2]?.setStretchFactor(2);
     chart.panes()[3]?.setStretchFactor(2.5);
+
+    const oscaleProvider = () => ({ priceRange: { minValue: 0, maxValue: 100 } });
     this.priceSeries = chart.addSeries(CandlestickSeries, {
-      upColor: this.tradingViewPalette.up,
-      downColor: this.tradingViewPalette.down,
-      borderUpColor: this.tradingViewPalette.up,
-      borderDownColor: this.tradingViewPalette.down,
-      wickUpColor: this.tradingViewPalette.up,
-      wickDownColor: this.tradingViewPalette.down,
-      lastValueVisible: true,
-      priceLineVisible: false,
+      upColor: pal.up, downColor: pal.down, borderUpColor: pal.up, borderDownColor: pal.down,
+      wickUpColor: pal.up, wickDownColor: pal.down, lastValueVisible: true, priceLineVisible: false,
     }, 0);
-    this.stochasticKSeries = chart.addSeries(LineSeries, {
-      color: this.tradingViewPalette.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-    }, 1);
-    this.stochasticDSeries = chart.addSeries(LineSeries, {
-      color: this.tradingViewPalette.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-    }, 1);
-    this.rsiSeries = chart.addSeries(LineSeries, {
-      color: this.tradingViewPalette.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-    }, 2);
-    this.macdHistogramSeries = chart.addSeries(HistogramSeries, {
-      base: 0,
-      color: this.tradingViewPalette.macdPositive,
-      lastValueVisible: false,
-      priceLineVisible: false,
-    }, 3);
-    this.macdSignalSeries = chart.addSeries(LineSeries, {
-      color: this.tradingViewPalette.orange,
-      lineWidth: 2,
-      lastValueVisible: false,
-      priceLineVisible: false,
-      pointMarkersVisible: false,
-    }, 3);
-    this.macdLineSeries = chart.addSeries(LineSeries, {
-      color: this.tradingViewPalette.macdMain,
-      lineWidth: 2,
-      lineStyle: LineStyle.Dotted,
-      lastValueVisible: false,
-      priceLineVisible: false,
-      pointMarkersVisible: false,
-    }, 3);
+    this.stochasticKSeries = chart.addSeries(LineSeries, { color: pal.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, 1);
+    this.stochasticDSeries = chart.addSeries(LineSeries, { color: pal.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, 1);
+    this.rsiSeries = chart.addSeries(LineSeries, { color: pal.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, 2);
+    this.macdHistogramSeries = chart.addSeries(HistogramSeries, { base: 0, color: pal.macdPositive, lastValueVisible: false, priceLineVisible: false }, 3);
+    this.macdSignalSeries = chart.addSeries(LineSeries, { color: pal.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, 3);
+    this.macdLineSeries = chart.addSeries(LineSeries, { color: pal.macdMain, lineWidth: 2, lineStyle: LineStyle.Dotted, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, 3);
+
     chart.priceScale("right", 1).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
     chart.priceScale("right", 2).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
     chart.priceScale("right", 3).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
+
     this.chartRef = chart;
     this.visibleLogicalRangeHandler = (range: LogicalRange | null) => this.handleVisibleLogicalRangeChange(range);
     chart.timeScale().subscribeVisibleLogicalRangeChange(this.visibleLogicalRangeHandler);
     this.createGuideLines();
   }
 
+  // ── Seed ───────────────────────────────────────────────────────────────
+
   private seedInitialCandles(): void {
-    this.articleSeedCandles = this.normalizeCandles(this.initialCandles);
+    this.articleSeedCandles = normalizeCandles(this.initialCandles);
     this.indicatorWarmupCandles = [];
+    this.pricePrecisionApplied = false;
+    this.tradeLevelsRendered = false;
     this.seededFromChartData = this.articleSeedCandles.length > 0;
     this.seededHistoryEndTime = this.seededFromChartData ? this.articleSeedCandles[this.articleSeedCandles.length - 1].time : null;
     if (this.seededFromChartData) {
@@ -282,19 +256,21 @@ export class RealtimeDivergenceChartComponent
       this.error = null;
       this.autoFitApplied = false;
       this.followRealtime = true;
-      this.renderMarketData();
+      this.renderMarketDataFull();
     } else if (!this.active) {
       this.candles = [];
-      this.renderMarketData();
+      this.renderMarketDataFull();
     }
   }
 
+  // ── Realtime lifecycle ─────────────────────────────────────────────────
+
   private async syncRealtime(): Promise<void> {
     const token = ++this.syncToken;
-    const symbol = this.normalizeSymbol(this.symbol);
-    const tf = this.normalizeDisplayTimeframe(this.timeframe);
-    const source = this.normalizeSource(this.source);
-    if (!this.active || !symbol || !tf || !source) {
+    const sym = normalizeSymbol(this.symbol);
+    const tf = normalizeDisplayTimeframe(this.timeframe);
+    const src = normalizeSource(this.source);
+    if (!this.active || !sym || !tf || !src) {
       await this.teardownRealtime();
       if (token !== this.syncToken) return;
       this.loading = false;
@@ -302,16 +278,16 @@ export class RealtimeDivergenceChartComponent
       if (!this.candles.length && !this.seededFromChartData) this.error = "No candle data provided for divergence chart.";
       return;
     }
-    const nextKey = `${symbol}|${tf}|${source}|${this.hubTimeOffsetSeconds}`;
+    const nextKey = `${sym}|${tf}|${src}|${this.hubTimeOffsetSeconds}`;
     if (this.currentKey === nextKey && this.connection && this.candleEventHandler) return;
     await this.teardownRealtime();
     if (token !== this.syncToken) return;
     this.loading = !this.candles.length;
     this.error = null;
-    this.currentSymbol = symbol;
-    this.currentSource = source;
-    this.hubTimeframe = this.toHubTimeframe(tf);
-    this.timeframeSeconds = this.timeframeToSeconds(tf);
+    this.currentSymbol = sym;
+    this.currentSource = src;
+    this.hubTf = toHubTimeframe(tf);
+    this.tfSeconds = timeframeToSeconds(tf);
     this.currentKey = nextKey;
     try {
       const connection = await this.hub.ensureConnected();
@@ -320,92 +296,146 @@ export class RealtimeDivergenceChartComponent
       this.connected = connection.state === signalR.HubConnectionState.Connected;
       this.candleEventHandler = (evt: any) => this.handleCandleEvent(evt);
       connection.on("candle_event", this.candleEventHandler);
-      await this.requestTfSnapshot(connection, source, this.initialTfSnapshotCount);
-      if (source === "quotes") {
-        await connection.invoke("SubscribeCandles", this.currentSymbol, "1s", source);
+
+      // Reconnect handler
+      this.removeReconnectedListener = this.hub.addReconnectedListener(() => {
+        if (this.syncToken !== token) return;
+        void this.resubscribeAfterReconnect(src);
+      });
+
+      await this.requestTfSnapshot(connection, src, this.initialTfSnapshotCount);
+      if (src === "quotes") {
+        await connection.invoke("SubscribeCandles", this.currentSymbol, "1s", src);
       } else {
-        await connection.invoke("SubscribeCandles", this.currentSymbol, this.hubTimeframe || "1m", source);
-        this.startTfSnapshotRefresh(connection, source);
+        await connection.invoke("SubscribeCandles", this.currentSymbol, this.hubTf || "1m", src);
+        this.startTfSnapshotRefresh(connection, src);
       }
     } catch (error) {
       console.error("Failed to initialize divergence realtime chart", error);
       this.connected = false;
-      if (!this.candles.length) this.error = this.stringifyError(error);
+      if (!this.candles.length) this.error = stringifyError(error);
     } finally {
       if (token === this.syncToken) this.loading = false;
     }
   }
 
+  private async resubscribeAfterReconnect(src: string): Promise<void> {
+    const connection = this.connection;
+    if (!connection || connection.state !== signalR.HubConnectionState.Connected) return;
+    try {
+      await this.requestTfSnapshot(connection, src, this.initialTfSnapshotCount);
+      if (src === "quotes") {
+        await connection.invoke("SubscribeCandles", this.currentSymbol, "1s", src);
+      } else {
+        await connection.invoke("SubscribeCandles", this.currentSymbol, this.hubTf || "1m", src);
+      }
+      this.connected = true;
+    } catch (error) {
+      console.error("Failed to resubscribe after reconnect", error);
+      this.connected = false;
+    }
+  }
+
   private handleCandleEvent(evt: any): void {
     if (!evt || evt.symbol !== this.currentSymbol) return;
-    const evtSource = this.normalizeSource(evt.source || "");
-    const source = this.currentSource;
-    if (evtSource && evtSource !== source) return;
-    if (evt.type === "candle" && evt.eventType === "snapshot" && evt.tf === this.hubTimeframe) {
+    const evtSource = normalizeSource(evt.source || "");
+    const src = this.currentSource;
+    if (evtSource && evtSource !== src) return;
+
+    // Snapshot — full render + indicators
+    if (evt.type === "candle" && evt.eventType === "snapshot" && evt.tf === this.hubTf) {
+      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
       const snapshot = (evt.candles || [])
-        .map((c: any) => this.normalizeTfCandle(c, this.hubTimeOffsetSeconds))
+        .map((c: any) => normalizeTfCandle(c, this.hubTimeOffsetSeconds, this.tfSeconds, lastTime))
         .filter((c: Candle | null): c is Candle => !!c)
-        .sort((l: Candle, r: Candle) => l.time - r.time);
+        .sort((a: Candle, b: Candle) => a.time - b.time);
       if (!snapshot.length) return;
       this.captureIndicatorWarmup(snapshot);
       const filtered = this.filterIncomingCandlesForSeededHistory(snapshot);
       if (!filtered.length && this.candles.length) return;
-      this.candles = this.candles.length ? this.mergeCandles(this.candles, filtered) : filtered;
-      this.renderMarketData();
-      this.renderTradeLevels();
+      this.candles = this.candles.length ? mergeCandles(this.candles, filtered) : filtered;
+      this.renderMarketDataFull();
+      if (!this.tradeLevelsRendered) this.renderTradeLevels();
       if (!this.overlayLineSeries.length) this.renderTrendlines();
       return;
     }
+
+    // 1s candle — lightweight update: only price series, skip indicator recalc
     if (evt.type === "candle" && (evt.eventType === "candle_close" || evt.eventType === "candle_update") && evt.tf === "1s") {
-      const candle = this.normalizeCandle(evt.candle, this.hubTimeOffsetSeconds);
+      const candle = normalizeCandle(evt.candle, this.hubTimeOffsetSeconds);
       if (!candle) return;
-      this.candles = this.updateLastTfCandle(this.candles, candle, this.timeframeSeconds);
-      this.renderMarketData();
-      this.renderTradeLevels();
+      const isNewBucket = this.candles.length > 0 && Math.floor(candle.time / this.tfSeconds) * this.tfSeconds > this.candles[this.candles.length - 1].time;
+      const result = updateLastTfCandle(this.candles, candle, this.tfSeconds, this.lastProcessed1sTime);
+      this.candles = result.candles;
+      this.lastProcessed1sTime = result.lastProcessed1sTime;
+
+      if (isNewBucket) {
+        // New candle formed — full indicator recalculation
+        this.renderMarketDataFull();
+      } else {
+        // Same candle updating — only update price series
+        this.renderPriceOnly();
+      }
       return;
     }
-    if (evt.type === "candle" && (evt.eventType === "candle_close" || evt.eventType === "candle_update") && evt.tf === this.hubTimeframe) {
-      if (source === "quotes") return;
-      const candle = this.normalizeTfCandle(evt.candle, this.hubTimeOffsetSeconds);
+
+    // TF candle — full render on close, price-only on update
+    if (evt.type === "candle" && (evt.eventType === "candle_close" || evt.eventType === "candle_update") && evt.tf === this.hubTf) {
+      if (src === "quotes") return;
+      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
+      const candle = normalizeTfCandle(evt.candle, this.hubTimeOffsetSeconds, this.tfSeconds, lastTime);
       if (!candle || !this.shouldAcceptIncomingCandle(candle)) return;
-      this.candles = this.upsertTfCandle(this.candles, candle);
-      this.renderMarketData();
-      this.renderTradeLevels();
+      const isNew = !this.candles.length || candle.time > this.candles[this.candles.length - 1].time;
+      this.candles = upsertTfCandle(this.candles, candle);
+
+      if (evt.eventType === "candle_close" || isNew) {
+        this.renderMarketDataFull();
+      } else {
+        this.renderPriceOnly();
+      }
     }
   }
 
   private async teardownRealtime(): Promise<void> {
     this.stopTfSnapshotRefresh();
+    if (this.removeReconnectedListener) {
+      this.removeReconnectedListener();
+      this.removeReconnectedListener = null;
+    }
     if (!this.connection) {
       this.candleEventHandler = null;
       this.currentKey = "";
       this.currentSymbol = "";
       this.currentSource = "";
-      this.hubTimeframe = "";
-      this.timeframeSeconds = 300;
+      this.hubTf = "";
+      this.tfSeconds = 300;
       return;
     }
     const connection = this.connection;
-    const source = this.currentSource;
+    const src = this.currentSource;
     if (this.candleEventHandler) {
       connection.off("candle_event", this.candleEventHandler);
       this.candleEventHandler = null;
     }
-    if (this.currentSymbol && this.hubTimeframe && source && connection.state === signalR.HubConnectionState.Connected) {
-      try { await connection.invoke("UnsubscribeCandles", this.currentSymbol, this.hubTimeframe, source); } catch (error) { console.error("Failed to unsubscribe divergence tf candles", error); }
-      if (source === "quotes") {
-        try { await connection.invoke("UnsubscribeCandles", this.currentSymbol, "1s", source); } catch (error) { console.error("Failed to unsubscribe divergence 1s candles", error); }
+    if (this.currentSymbol && this.hubTf && src && connection.state === signalR.HubConnectionState.Connected) {
+      try { await connection.invoke("UnsubscribeCandles", this.currentSymbol, this.hubTf, src); } catch (e) { console.error("Failed to unsubscribe divergence tf candles", e); }
+      if (src === "quotes") {
+        try { await connection.invoke("UnsubscribeCandles", this.currentSymbol, "1s", src); } catch (e) { console.error("Failed to unsubscribe divergence 1s candles", e); }
       }
     }
     this.connection = null;
     this.currentKey = "";
     this.currentSymbol = "";
     this.currentSource = "";
-    this.hubTimeframe = "";
-    this.timeframeSeconds = 300;
+    this.hubTf = "";
+    this.tfSeconds = 300;
+    this.lastProcessed1sTime = null;
   }
 
-  private renderMarketData(): void {
+  // ── Rendering ──────────────────────────────────────────────────────────
+
+  /** Full render: price + all indicators. Used on snapshot, candle_close, seed. */
+  private renderMarketDataFull(): void {
     if (!this.priceSeries || !this.stochasticKSeries || !this.stochasticDSeries || !this.rsiSeries || !this.macdHistogramSeries || !this.macdSignalSeries || !this.macdLineSeries || !this.chartRef) return;
     if (!this.candles.length) {
       this.priceSeries.setData([]);
@@ -418,24 +448,44 @@ export class RealtimeDivergenceChartComponent
       return;
     }
     this.error = null;
-    this.applyPriceFormat();
-    this.priceSeries.setData(this.candles.map((c) => ({ time: this.toUtc(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+    if (!this.pricePrecisionApplied) {
+      this.applyPriceFormat();
+      this.pricePrecisionApplied = true;
+    }
+    this.priceSeries.setData(this.candles.map((c) => ({ time: toUtc(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+
     const indicatorCandles = this.getIndicatorInputCandles();
     const stochastic = this.filterIndicatorSeriesToVisibleRange(calculateStochasticSeries(indicatorCandles, 5, 3, 3));
-    this.stochasticKSeries.setData(stochastic.map((p) => ({ time: this.toUtc(p.time), value: p.k })));
-    this.stochasticDSeries.setData(stochastic.map((p) => ({ time: this.toUtc(p.time), value: p.d })));
+    this.stochasticKSeries.setData(stochastic.map((p) => ({ time: toUtc(p.time), value: p.k })));
+    this.stochasticDSeries.setData(stochastic.map((p) => ({ time: toUtc(p.time), value: p.d })));
+
     const rsi = this.filterIndicatorSeriesToVisibleRange(calculateRsiSeries(indicatorCandles, 14));
-    this.rsiSeries.setData(rsi.map((p) => ({ time: this.toUtc(p.time), value: p.value })));
+    this.rsiSeries.setData(rsi.map((p) => ({ time: toUtc(p.time), value: p.value })));
+
     const macd = this.filterIndicatorSeriesToVisibleRange(calculateMacdSeries(indicatorCandles, 12, 29, 9));
-    this.macdHistogramSeries.setData(
-      macd.map((p) => ({
-        time: this.toUtc(p.time),
-        value: p.histogram,
-        color: p.histogram >= 0 ? this.tradingViewPalette.macdPositive : this.tradingViewPalette.macdNegative,
-      })),
-    );
-    this.macdSignalSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.signal })));
-    this.macdLineSeries.setData(macd.map((p) => ({ time: this.toUtc(p.time), value: p.macd })));
+    this.macdHistogramSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.histogram, color: p.histogram >= 0 ? this.tradingViewPalette.macdPositive : this.tradingViewPalette.macdNegative })));
+    this.macdSignalSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.signal })));
+    this.macdLineSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.macd })));
+
+    this.handleAutoFitAndScroll();
+  }
+
+  /** Lightweight render: only updates price candlestick. Skips indicators. */
+  private renderPriceOnly(): void {
+    if (!this.priceSeries || !this.candles.length) return;
+    const last = this.candles[this.candles.length - 1];
+    try {
+      this.priceSeries.update({ time: toUtc(last.time), open: last.open, high: last.high, low: last.low, close: last.close });
+    } catch {
+      // Fallback to full setData if update fails (e.g. time ordering issue)
+      this.priceSeries.setData(this.candles.map((c) => ({ time: toUtc(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+    }
+    if (this.active && this.followRealtime) {
+      requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
+    }
+  }
+
+  private handleAutoFitAndScroll(): void {
     if (!this.autoFitApplied) {
       this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().fitContent());
       this.autoFitApplied = true;
@@ -444,17 +494,16 @@ export class RealtimeDivergenceChartComponent
     }
   }
 
+  // ── Trendlines ─────────────────────────────────────────────────────────
+
   private renderTrendlines(): void {
     if (!this.chartRef) return;
     this.removeTrendlines();
     for (const line of this.normalizeTrendLines()) {
       const series = this.chartRef.addSeries(LineSeries, {
-        color: line.color,
-        lineWidth: line.width,
+        color: line.color, lineWidth: line.width,
         lineStyle: line.style === "dot" ? LineStyle.Dotted : LineStyle.Solid,
-        lastValueVisible: false,
-        priceLineVisible: false,
-        pointMarkersVisible: false,
+        lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
       }, line.paneIndex);
       series.setData(this.buildTrendLineData(line));
       this.overlayLineSeries.push(series);
@@ -464,13 +513,14 @@ export class RealtimeDivergenceChartComponent
   private renderTradeLevels(): void {
     if (!this.chartRef || !this.priceSeries || !this.candles.length) return;
     this.removeTradeLevels();
-    const entry = this.parsePrice(this.entryPrice);
-    const target = this.parsePrice(this.takeProfit);
-    const stop = this.parsePrice(this.stopOrder);
+    const entry = parsePrice(this.entryPrice);
+    const target = parsePrice(this.takeProfit);
+    const stop = parsePrice(this.stopOrder);
     if (entry === null && target === null && stop === null) return;
-    const tfSeconds = this.timeframeToSeconds(this.normalizeDisplayTimeframe(this.timeframe) || "M5");
+    const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe) || "M5");
     const startTime = this.getTradeLevelsStartTime();
-    const endTime = this.getTradeLevelsEndTime(tfSeconds);
+    const endTime = this.getTradeLevelsEndTime(tfSec);
+
     if (entry !== null && target !== null) {
       const series = this.chartRef.addSeries(BaselineSeries, {
         baseValue: { type: "price", price: entry },
@@ -483,9 +533,10 @@ export class RealtimeDivergenceChartComponent
         lineWidth: 1, priceLineVisible: false, lastValueVisible: false, baseLineVisible: false,
         autoscaleInfoProvider: () => null,
       }, 0);
-      series.setData(this.buildBaselineData(startTime, endTime, target, tfSeconds));
+      series.setData(this.buildBaselineData(startTime, endTime, target, tfSec));
       this.tradeLevelAreaSeries.push(series);
     }
+
     if (entry !== null && stop !== null) {
       const series = this.chartRef.addSeries(BaselineSeries, {
         baseValue: { type: "price", price: entry },
@@ -498,12 +549,14 @@ export class RealtimeDivergenceChartComponent
         lineWidth: 1, priceLineVisible: false, lastValueVisible: false, baseLineVisible: false,
         autoscaleInfoProvider: () => null,
       }, 0);
-      series.setData(this.buildBaselineData(startTime, endTime, stop, tfSeconds));
+      series.setData(this.buildBaselineData(startTime, endTime, stop, tfSec));
       this.tradeLevelAreaSeries.push(series);
     }
+
     if (entry !== null) this.bindPriceLine(this.priceSeries, { price: entry, color: "#dc2626", lineWidth: 1, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: "Entry", lineVisible: true });
     if (target !== null) this.bindPriceLine(this.priceSeries, { price: target, color: "#18a67d", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "Target", lineVisible: true });
     if (stop !== null) this.bindPriceLine(this.priceSeries, { price: stop, color: "#ef5350", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "Stop", lineVisible: true });
+    this.tradeLevelsRendered = true;
   }
 
   private createGuideLines(): void {
@@ -516,16 +569,10 @@ export class RealtimeDivergenceChartComponent
     this.bindGuideLine(this.macdSignalSeries, 0);
   }
 
+  // ── Helpers ────────────────────────────────────────────────────────────
+
   private bindGuideLine(series: AnySeries, price: number): void {
-    const line = (series as any).createPriceLine({
-      price,
-      color: "rgba(107,114,128,0.5)",
-      lineWidth: 1,
-      lineStyle: LineStyle.Dotted,
-      axisLabelVisible: false,
-      title: "",
-      lineVisible: true,
-    });
+    const line = (series as any).createPriceLine({ price, color: "rgba(107,114,128,0.5)", lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: "", lineVisible: true });
     this.guideLines.push({ series, line });
   }
 
@@ -534,232 +581,15 @@ export class RealtimeDivergenceChartComponent
     this.priceLines.push({ series, line });
   }
 
-  private normalizeCandles(rawCandles: any[] | null): Candle[] {
-    return (Array.isArray(rawCandles) ? rawCandles : [])
-      .map((candle) => this.normalizeCandle(candle))
-      .filter((candle: Candle | null): candle is Candle => !!candle)
-      .sort((left: Candle, right: Candle) => left.time - right.time);
-  }
-
-  private normalizeCandle(candle: any, timeOffsetSeconds = 0): Candle | null {
-    if (!candle) return null;
-    const time = this.readNumber(candle, ["time", "Time", "t", "T"]);
-    const open = this.readNumber(candle, ["open", "Open", "o", "O"]);
-    const high = this.readNumber(candle, ["high", "High", "h", "H"]);
-    const low = this.readNumber(candle, ["low", "Low", "l", "L"]);
-    const close = this.readNumber(candle, ["close", "Close", "c", "C"]);
-    const volume = this.readOptionalNumber(candle, ["volume", "Volume", "v", "V"]);
-    if (time === null || open === null || high === null || low === null || close === null) return null;
-    return { time: Number(this.toUtc(time)) + timeOffsetSeconds, open, high, low, close, volume };
-  }
-
-  private normalizeTfCandle(candle: any, timeOffsetSeconds = 0): Candle | null {
-    const normalized = this.normalizeCandle(candle, timeOffsetSeconds);
-    return normalized ? { ...normalized, time: this.normalizeTfTimestamp(normalized.time) } : null;
-  }
-
-  private normalizeTfTimestamp(rawTime: number): number {
-    const raw = Number(this.toUtc(rawTime));
-    if (!Number.isFinite(raw) || raw <= 0) return 0;
-    const tfSec = Math.max(1, this.timeframeSeconds || 60);
-    const bucketStart = Math.floor(raw / tfSec) * tfSec;
-    const lastLocalTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
-    if (raw % tfSec === 0 && lastLocalTime !== null && lastLocalTime === raw - tfSec) return raw - tfSec;
-    return bucketStart;
-  }
-
-  private normalizeTrendLines(): TrendLine[] {
-    const source = Array.isArray(this.trendLines) && this.trendLines.length ? this.trendLines : Array.isArray(this.objects) ? this.objects : [];
-    return source.map((line, index) => this.normalizeTrendLine(line, index)).filter((line: TrendLine | null): line is TrendLine => !!line);
-  }
-
-  private normalizeTrendLine(rawLine: any, lineIndex: number): TrendLine | null {
-    if (rawLine?.type !== "trendline") return null;
-    const rawPoints = Array.isArray(rawLine?.points) ? rawLine.points : [];
-    if (rawPoints.length < 2) return null;
-    const points = rawPoints
-      .map((point: any) => {
-        const time = this.readNumber(point, ["time", "Time"]);
-        const value = this.readNumber(point, ["price", "Price", "value", "Value"]);
-        return time === null || value === null ? null : { time: this.resolveTrendLineTime(Number(this.toUtc(time))), value };
-      })
-      .filter((point: { time: number; value: number } | null): point is { time: number; value: number } => !!point && point.time > 0 && Number.isFinite(point.value))
-      .sort(
-        (
-          left: { time: number; value: number },
-          right: { time: number; value: number },
-        ) => left.time - right.time,
-      );
-    if (points.length < 2) return null;
-    return {
-      color: String(rawLine?.color ?? "#42D433"),
-      width: Math.min(Math.max(Number(rawLine?.width ?? 2), 1), 4) as 1 | 2 | 3 | 4,
-      style: String(rawLine?.style ?? "solid").toLowerCase() === "dot" ? "dot" : "solid",
-      rayRight: !!rawLine?.ray_right,
-      paneIndex: this.resolveTrendLinePaneIndex(rawLine, points, lineIndex),
-      p1: points[0],
-      p2: points[points.length - 1],
-    };
-  }
-
-  private resolveTrendLinePaneIndex(rawLine: any, points: Array<{ time: number; value: number }>, lineIndex: number): number {
-    const pane = `${rawLine?.pane ?? rawLine?.panel ?? ""}`.trim().toLowerCase();
-    if (pane.includes("stoch")) return 1;
-    if (pane.includes("rsi")) return 2;
-    if (pane.includes("macd")) return 3;
-    if (this.looksPriceLike(points)) return 0;
-    const indicator = `${rawLine?.indicator ?? ""}`.trim().toLowerCase();
-    if (indicator.includes("stoch")) return 1;
-    if (indicator.includes("rsi")) return 2;
-    if (indicator.includes("macd")) return 3;
-    return lineIndex === 0 ? 0 : 2;
-  }
-
-  private resolveTrendLineTime(rawTime: number): number {
-    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
-    if (!candles.length) return rawTime;
-    const tfSeconds = this.timeframeToSeconds(this.normalizeDisplayTimeframe(this.timeframe) || "M5");
-    let nearestTime = candles[0].time;
-    let nearestDistance = Math.abs(nearestTime - rawTime);
-    for (const candle of candles) {
-      const distance = Math.abs(candle.time - rawTime);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestTime = candle.time;
-      }
-    }
-    return nearestDistance <= tfSeconds ? nearestTime : rawTime;
-  }
-
-  private looksPriceLike(points: Array<{ value: number }>): boolean {
-    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
-    if (!candles.length) return false;
-    let minPrice = Number.POSITIVE_INFINITY;
-    let maxPrice = Number.NEGATIVE_INFINITY;
-    for (const candle of candles) {
-      minPrice = Math.min(minPrice, candle.low);
-      maxPrice = Math.max(maxPrice, candle.high);
-    }
-    const padding = Math.max((maxPrice - minPrice) * 0.25, this.getPriceMinMove() * 10);
-    return points.every((point) => point.value >= minPrice - padding && point.value <= maxPrice + padding);
-  }
-
-  private buildTrendLineData(line: TrendLine): Array<{ time: UTCTimestamp; value: number }> {
-    const data = [
-      { time: this.toUtc(line.p1.time), value: line.p1.value },
-      { time: this.toUtc(line.p2.time), value: line.p2.value },
-    ];
-    if (!line.rayRight) return data;
-    const endTime = Math.max(line.p2.time + this.timeframeSeconds * 15, line.p1.time + 1);
-    const dt = line.p2.time - line.p1.time;
-    const endValue = dt === 0 ? line.p2.value : line.p2.value + ((line.p2.value - line.p1.value) / dt) * (endTime - line.p2.time);
-    data.push({ time: this.toUtc(endTime), value: endValue });
-    return data;
-  }
-
-  private buildBaselineData(startTime: number, endTime: number, value: number, tfSeconds: number): Array<{ time: UTCTimestamp; value: number }> {
-    const points: Array<{ time: UTCTimestamp; value: number }> = [{ time: this.toUtc(startTime), value }];
-    if (endTime > startTime + tfSeconds) {
-      let cursor = Math.floor(startTime / tfSeconds) * tfSeconds + tfSeconds;
-      while (cursor < endTime) {
-        if (cursor > startTime) points.push({ time: this.toUtc(cursor), value });
-        cursor += tfSeconds;
-      }
-    }
-    points.push({ time: this.toUtc(endTime), value });
-    return points;
-  }
-
-  private getTradeLevelsEndTime(tfSeconds: number): number {
-    const lastCandleTime = this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
-    return lastCandleTime + tfSeconds * this.defaultRightOffsetBars;
-  }
-
-  private getTradeLevelsStartTime(): number {
-    if (this.seededHistoryEndTime !== null) return this.seededHistoryEndTime;
-    if (this.articleSeedCandles.length) return this.articleSeedCandles[this.articleSeedCandles.length - 1].time;
-    return this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
-  }
-
-  private formatHoverDate(time: unknown): string {
-    return this.formatChartDate(time);
-  }
-
-  private formatChartDate(time: unknown): string {
-    const epochSeconds = this.extractChartEpochSeconds(time);
-    if (epochSeconds === null) return "";
-    const date = new Date(epochSeconds * 1000);
-    const day = `${date.getUTCDate()}`.padStart(2, "0");
-    const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
-    const year = date.getUTCFullYear();
-    if (this.timeframeSeconds >= 86400) {
-      return `${day}.${month}.${year}`;
-    }
-    const hours = `${date.getUTCHours()}`.padStart(2, "0");
-    const minutes = `${date.getUTCMinutes()}`.padStart(2, "0");
-    if (this.timeframeSeconds >= 60) {
-      return `${day}.${month}.${year} ${hours}:${minutes}`;
-    }
-    const seconds = `${date.getUTCSeconds()}`.padStart(2, "0");
-    return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
-  }
-
-  private extractChartEpochSeconds(time: unknown): number | null {
-    if (typeof time === "number" || typeof time === "string") {
-      const value = Number(time);
-      return Number.isFinite(value) ? Number(this.toUtc(value)) : null;
-    }
-    if (time && typeof time === "object") {
-      const year = Number((time as { year?: number }).year);
-      const month = Number((time as { month?: number }).month);
-      const day = Number((time as { day?: number }).day);
-      if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
-        return Math.floor(Date.UTC(year, month - 1, day) / 1000);
-      }
-    }
-    return null;
-  }
-
-  private applyPriceFormat(): void {
-    if (!this.priceSeries) return;
-    const values = this.candles.flatMap((c) => [c.open, c.high, c.low, c.close]);
-    const entry = this.parsePrice(this.entryPrice);
-    const target = this.parsePrice(this.takeProfit);
-    const stop = this.parsePrice(this.stopOrder);
-    if (entry !== null) values.push(entry);
-    if (target !== null) values.push(target);
-    if (stop !== null) values.push(stop);
-    const precision = this.inferPrecision(values);
-    this.priceSeries.applyOptions({ priceFormat: { type: "price", precision, minMove: precision > 0 ? 1 / Math.pow(10, precision) : 1 } });
-  }
-
-  private inferPrecision(values: number[]): number {
-    let precision = 2;
-    for (const value of values) {
-      if (!Number.isFinite(value)) continue;
-      const text = value.toString().toLowerCase();
-      if (text.includes("e-")) {
-        precision = Math.max(precision, Number(text.split("e-")[1] || 0));
-        continue;
-      }
-      const index = text.indexOf(".");
-      if (index >= 0) precision = Math.max(precision, text.length - index - 1);
-    }
-    return Math.min(Math.max(precision, 2), 10);
-  }
-
-  private getPriceMinMove(): number {
-    const precision = this.inferPrecision(this.candles.flatMap((c) => [c.open, c.high, c.low, c.close]));
-    return precision > 0 ? 1 / Math.pow(10, precision) : 1;
-  }
-
   private filterIncomingCandlesForSeededHistory(incoming: Candle[]): Candle[] {
-    return !this.seededFromChartData || this.seededHistoryEndTime === null ? incoming : incoming.filter((candle) => this.shouldAcceptIncomingCandle(candle));
+    if (!this.seededFromChartData || this.seededHistoryEndTime === null) return incoming;
+    const overlapSeconds = Math.max(this.tfSeconds * 2, 1);
+    return incoming.filter((c) => c.time >= this.seededHistoryEndTime! - overlapSeconds);
   }
 
   private shouldAcceptIncomingCandle(candle: Candle): boolean {
     if (!this.seededFromChartData || this.seededHistoryEndTime === null) return true;
-    const overlapSeconds = Math.max(this.timeframeSeconds * 2, 1);
+    const overlapSeconds = Math.max(this.tfSeconds * 2, 1);
     return candle.time >= this.seededHistoryEndTime - overlapSeconds;
   }
 
@@ -769,63 +599,48 @@ export class RealtimeDivergenceChartComponent
       return;
     }
     const visibleStartTime = this.articleSeedCandles[0].time;
-    const warmupSlice = snapshot.filter((candle) => candle.time < visibleStartTime);
+    const warmupSlice = snapshot.filter((c) => c.time < visibleStartTime);
     if (!warmupSlice.length) return;
-    const mergedWarmup = this.mergeCandles(this.indicatorWarmupCandles, warmupSlice);
-    this.indicatorWarmupCandles = mergedWarmup.slice(-this.indicatorWarmupLimit);
+    this.indicatorWarmupCandles = mergeCandles(this.indicatorWarmupCandles, warmupSlice).slice(-this.indicatorWarmupLimit);
   }
 
   private getIndicatorInputCandles(): Candle[] {
-    return this.indicatorWarmupCandles.length ? this.mergeCandles(this.indicatorWarmupCandles, this.candles) : this.candles;
+    return this.indicatorWarmupCandles.length ? mergeCandles(this.indicatorWarmupCandles, this.candles) : this.candles;
   }
 
   private filterIndicatorSeriesToVisibleRange<T extends { time: number }>(series: T[]): T[] {
     if (!series.length || !this.candles.length) return series;
     const visibleStartTime = this.candles[0].time;
-    return series.filter((point) => point.time >= visibleStartTime);
+    return series.filter((p) => p.time >= visibleStartTime);
   }
 
-  private updateLastTfCandle(previous: Candle[], oneSecond: Candle, timeframeSeconds: number): Candle[] {
-    const bucketStart = Math.floor(oneSecond.time / timeframeSeconds) * timeframeSeconds;
-    if (!previous.length) return [{ time: bucketStart, open: oneSecond.open, high: oneSecond.high, low: oneSecond.low, close: oneSecond.close, volume: oneSecond.volume || 0 }];
-    const last = previous[previous.length - 1];
-    if (last.time === bucketStart) {
-      const next = [...previous];
-      next[next.length - 1] = { ...last, high: Math.max(last.high, oneSecond.high), low: Math.min(last.low, oneSecond.low), close: oneSecond.close, volume: (last.volume || 0) + (oneSecond.volume || 0) };
-      return next;
-    }
-    if (bucketStart > last.time) return [...previous, { time: bucketStart, open: oneSecond.open, high: oneSecond.high, low: oneSecond.low, close: oneSecond.close, volume: oneSecond.volume || 0 }];
-    return previous;
+  private applyPriceFormat(): void {
+    if (!this.priceSeries) return;
+    const values = this.candles.flatMap((c) => [c.open, c.high, c.low, c.close]);
+    const entry = parsePrice(this.entryPrice);
+    const target = parsePrice(this.takeProfit);
+    const stop = parsePrice(this.stopOrder);
+    if (entry !== null) values.push(entry);
+    if (target !== null) values.push(target);
+    if (stop !== null) values.push(stop);
+    const precision = inferPrecision(values);
+    this.priceSeries.applyOptions({ priceFormat: { type: "price", precision, minMove: precision > 0 ? 1 / Math.pow(10, precision) : 1 } });
   }
 
-  private upsertTfCandle(previous: Candle[], nextCandle: Candle): Candle[] {
-    if (!previous.length) return [nextCandle];
-    const next = [...previous];
-    const index = next.findIndex((c) => c.time === nextCandle.time);
-    if (index >= 0) next[index] = nextCandle;
-    else if (nextCandle.time > next[next.length - 1].time) next.push(nextCandle);
-    return next;
+  // ── Snapshot refresh ───────────────────────────────────────────────────
+
+  private async requestTfSnapshot(connection: signalR.HubConnection, src: string, count: number): Promise<void> {
+    if (!this.currentSymbol || !this.hubTf || !src || connection.state !== signalR.HubConnectionState.Connected) return;
+    await connection.invoke("RequestCandlesSnapshot", this.currentSymbol, this.hubTf, src, count);
   }
 
-  private mergeCandles(previous: Candle[], incoming: Candle[]): Candle[] {
-    if (!previous.length) return [...incoming].sort((left, right) => left.time - right.time);
-    const byTime = new Map<number, Candle>();
-    for (const candle of previous) byTime.set(candle.time, candle);
-    for (const candle of incoming) byTime.set(candle.time, candle);
-    return Array.from(byTime.values()).sort((left, right) => left.time - right.time);
-  }
-
-  private async requestTfSnapshot(connection: signalR.HubConnection, source: string, count: number): Promise<void> {
-    if (!this.currentSymbol || !this.hubTimeframe || !source || connection.state !== signalR.HubConnectionState.Connected) return;
-    await connection.invoke("RequestCandlesSnapshot", this.currentSymbol, this.hubTimeframe, source, count);
-  }
-
-  private startTfSnapshotRefresh(connection: signalR.HubConnection, source: string): void {
+  private startTfSnapshotRefresh(connection: signalR.HubConnection, src: string): void {
     this.stopTfSnapshotRefresh();
-    if (!this.currentSymbol || !this.hubTimeframe || !source || !this.isBrowser) return;
+    if (!this.currentSymbol || !this.hubTf || !src || !this.isBrowser) return;
     this.tfSnapshotRefreshTimer = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (!this.connection || this.connection !== connection || connection.state !== signalR.HubConnectionState.Connected) return;
-      void this.requestTfSnapshot(connection, source, this.refreshTfSnapshotCount).catch((error: unknown) => console.warn("Failed to refresh divergence tf snapshot", error));
+      void this.requestTfSnapshot(connection, src, this.refreshTfSnapshotCount).catch((e: unknown) => console.warn("Failed to refresh divergence tf snapshot", e));
     }, 5000);
   }
 
@@ -834,34 +649,25 @@ export class RealtimeDivergenceChartComponent
     this.tfSnapshotRefreshTimer = null;
   }
 
+  // ── Cleanup ────────────────────────────────────────────────────────────
+
   private removeTrendlines(): void {
-    if (!this.chartRef) {
-      this.overlayLineSeries = [];
-      return;
-    }
-    for (const series of this.overlayLineSeries) {
-      try { this.chartRef.removeSeries(series); } catch (error) { console.warn("Failed to remove divergence trendline", error); }
-    }
+    if (!this.chartRef) { this.overlayLineSeries = []; return; }
+    for (const s of this.overlayLineSeries) { try { this.chartRef.removeSeries(s); } catch (e) { console.warn("Failed to remove divergence trendline", e); } }
     this.overlayLineSeries = [];
   }
 
   private removeTradeLevels(): void {
     if (this.chartRef) {
-      for (const series of this.tradeLevelAreaSeries) {
-        try { this.chartRef.removeSeries(series); } catch (error) { console.warn("Failed to remove divergence trade level area", error); }
-      }
+      for (const s of this.tradeLevelAreaSeries) { try { this.chartRef.removeSeries(s); } catch (e) { console.warn("Failed to remove divergence trade level area", e); } }
     }
     this.tradeLevelAreaSeries = [];
-    for (const binding of this.priceLines) {
-      try { (binding.series as any).removePriceLine(binding.line); } catch (error) { console.warn("Failed to remove divergence price line", error); }
-    }
+    for (const b of this.priceLines) { try { (b.series as any).removePriceLine(b.line); } catch (e) { console.warn("Failed to remove divergence price line", e); } }
     this.priceLines = [];
   }
 
   private removeGuideLines(): void {
-    for (const binding of this.guideLines) {
-      try { (binding.series as any).removePriceLine(binding.line); } catch (error) { console.warn("Failed to remove divergence guide line", error); }
-    }
+    for (const b of this.guideLines) { try { (b.series as any).removePriceLine(b.line); } catch (e) { console.warn("Failed to remove divergence guide line", e); } }
     this.guideLines = [];
   }
 
@@ -882,6 +688,8 @@ export class RealtimeDivergenceChartComponent
     this.macdLineSeries = null;
   }
 
+  // ── Visible range tracking ─────────────────────────────────────────────
+
   private handleVisibleLogicalRangeChange(range: LogicalRange | null): void {
     if (this.suppressVisibleRangeTracking || !range || !this.candles.length) return;
     const realtimeLogicalTo = this.candles.length - 1 + this.defaultRightOffsetBars;
@@ -890,19 +698,170 @@ export class RealtimeDivergenceChartComponent
 
   private runWithSuppressedVisibleRangeTracking(action: () => void): void {
     this.suppressVisibleRangeTracking = true;
-    try {
-      action();
-    } finally {
-      requestAnimationFrame(() => {
-        this.suppressVisibleRangeTracking = false;
-      });
+    try { action(); } finally {
+      requestAnimationFrame(() => { this.suppressVisibleRangeTracking = false; });
     }
   }
 
-  private parsePrice(value: string | null): number | null {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
+  // ── Trendline normalization ────────────────────────────────────────────
+
+  private normalizeTrendLines(): TrendLine[] {
+    const source = Array.isArray(this.trendLines) && this.trendLines.length ? this.trendLines : Array.isArray(this.objects) ? this.objects : [];
+    return source.map((l, i) => this.normalizeTrendLine(l, i)).filter((l: TrendLine | null): l is TrendLine => !!l);
   }
+
+  private normalizeTrendLine(rawLine: any, lineIndex: number): TrendLine | null {
+    if (rawLine?.type !== "trendline") return null;
+    const rawPoints = Array.isArray(rawLine?.points) ? rawLine.points : [];
+    if (rawPoints.length < 2) return null;
+    const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe) || "M5");
+    const points = rawPoints
+      .map((p: any) => {
+        const time = this.readNumber(p, ["time", "Time"]);
+        const value = this.readNumber(p, ["price", "Price", "value", "Value"]);
+        if (time === null || value === null) return null;
+        const barIdx = this.findNearestBarIndex(Number(toUtc(time)), tfSec);
+        return barIdx >= 0 && Number.isFinite(value) ? { barIdx, value } : null;
+      })
+      .filter((p: { barIdx: number; value: number } | null): p is { barIdx: number; value: number } => p !== null)
+      .sort((a: { barIdx: number }, b: { barIdx: number }) => a.barIdx - b.barIdx);
+    if (points.length < 2) return null;
+    const p1 = points[0];
+    const p2 = points[points.length - 1];
+    if (p1.barIdx === p2.barIdx) return null;
+    const slopePerBar = (p2.value - p1.value) / (p2.barIdx - p1.barIdx);
+    return {
+      color: String(rawLine?.color ?? "#42D433"),
+      width: Math.min(Math.max(Number(rawLine?.width ?? 2), 1), 4) as 1 | 2 | 3 | 4,
+      style: String(rawLine?.style ?? "solid").toLowerCase() === "dot" ? "dot" : "solid",
+      rayRight: !!rawLine?.ray_right,
+      paneIndex: this.resolveTrendLinePaneIndex(rawLine, points, lineIndex),
+      p1, p2, slopePerBar,
+    };
+  }
+
+  private resolveTrendLinePaneIndex(rawLine: any, points: Array<{ barIdx: number; value: number }>, lineIndex: number): number {
+    const pane = `${rawLine?.pane ?? rawLine?.panel ?? ""}`.trim().toLowerCase();
+    if (pane.includes("stoch")) return 1;
+    if (pane.includes("rsi")) return 2;
+    if (pane.includes("macd")) return 3;
+    if (this.looksPriceLike(points)) return 0;
+    const indicator = `${rawLine?.indicator ?? ""}`.trim().toLowerCase();
+    if (indicator.includes("stoch")) return 1;
+    if (indicator.includes("rsi")) return 2;
+    if (indicator.includes("macd")) return 3;
+    return lineIndex === 0 ? 0 : 2;
+  }
+
+  private findNearestBarIndex(rawTime: number, tfSec: number): number {
+    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
+    if (!candles.length) return -1;
+    let nearestIdx = 0;
+    let nearestDist = Math.abs(candles[0].time - rawTime);
+    for (let i = 1; i < candles.length; i++) {
+      const d = Math.abs(candles[i].time - rawTime);
+      if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+    }
+    return nearestDist <= tfSec ? nearestIdx : -1;
+  }
+
+  private looksPriceLike(points: Array<{ value: number }>): boolean {
+    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
+    if (!candles.length) return false;
+    let minP = Infinity, maxP = -Infinity;
+    for (const c of candles) { minP = Math.min(minP, c.low); maxP = Math.max(maxP, c.high); }
+    const padding = Math.max((maxP - minP) * 0.25, this.getPriceMinMove() * 10);
+    return points.every((p) => p.value >= minP - padding && p.value <= maxP + padding);
+  }
+
+  private getPriceMinMove(): number {
+    const precision = inferPrecision(this.candles.flatMap((c) => [c.open, c.high, c.low, c.close]));
+    return precision > 0 ? 1 / Math.pow(10, precision) : 1;
+  }
+
+  // ── Data builders ──────────────────────────────────────────────────────
+
+  private buildTrendLineData(line: TrendLine): Array<{ time: UTCTimestamp; value: number }> {
+    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
+    const n = candles.length;
+    if (!n) return [];
+    const data: Array<{ time: UTCTimestamp; value: number }> = [];
+    const lastBar = line.rayRight ? line.p2.barIdx + 15 : line.p2.barIdx;
+
+    for (let i = line.p1.barIdx; i <= lastBar; i++) {
+      const value = line.p1.value + line.slopePerBar * (i - line.p1.barIdx);
+      if (i < n) {
+        data.push({ time: candles[i].time as UTCTimestamp, value });
+      } else {
+        const t = candles[n - 1].time + (i - n + 1) * this.tfSeconds;
+        data.push({ time: Math.round(t) as UTCTimestamp, value });
+      }
+    }
+
+    return data;
+  }
+
+  private buildBaselineData(startTime: number, endTime: number, value: number, tfSec: number): Array<{ time: UTCTimestamp; value: number }> {
+    const points: Array<{ time: UTCTimestamp; value: number }> = [{ time: toUtc(startTime), value }];
+    // Use real candle times for intermediate points
+    for (const c of this.candles) {
+      if (c.time > startTime && c.time < endTime) {
+        points.push({ time: c.time as UTCTimestamp, value });
+      }
+    }
+    // Extend beyond last candle if needed
+    const lastCandleTime = this.candles.length ? this.candles[this.candles.length - 1].time : startTime;
+    if (endTime > lastCandleTime) {
+      let t = lastCandleTime + tfSec;
+      while (t < endTime) {
+        if (t > startTime) points.push({ time: Math.round(t) as UTCTimestamp, value });
+        t += tfSec;
+      }
+    }
+    points.push({ time: toUtc(endTime), value });
+    return points;
+  }
+
+  private getTradeLevelsEndTime(tfSec: number): number {
+    return (this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000)) + tfSec * this.defaultRightOffsetBars;
+  }
+
+  private getTradeLevelsStartTime(): number {
+    if (this.seededHistoryEndTime !== null) return this.seededHistoryEndTime;
+    if (this.articleSeedCandles.length) return this.articleSeedCandles[this.articleSeedCandles.length - 1].time;
+    return this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
+  }
+
+  // ── Date formatting ────────────────────────────────────────────────────
+
+  private formatHoverDate(time: unknown): string {
+    const epochSeconds = this.extractChartEpochSeconds(time);
+    if (epochSeconds === null) return "";
+    const d = new Date(epochSeconds * 1000);
+    const day = `${d.getUTCDate()}`.padStart(2, "0");
+    const month = `${d.getUTCMonth() + 1}`.padStart(2, "0");
+    const year = d.getUTCFullYear();
+    if (this.tfSeconds >= 86400) return `${day}.${month}.${year}`;
+    const hours = `${d.getUTCHours()}`.padStart(2, "0");
+    const minutes = `${d.getUTCMinutes()}`.padStart(2, "0");
+    if (this.tfSeconds >= 60) return `${day}.${month}.${year} ${hours}:${minutes}`;
+    const seconds = `${d.getUTCSeconds()}`.padStart(2, "0");
+    return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
+  }
+
+  private extractChartEpochSeconds(time: unknown): number | null {
+    if (typeof time === "number" || typeof time === "string") {
+      const value = Number(time);
+      return Number.isFinite(value) ? Number(toUtc(value)) : null;
+    }
+    if (time && typeof time === "object") {
+      const y = Number((time as any).year), m = Number((time as any).month), d = Number((time as any).day);
+      if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d)) return Math.floor(Date.UTC(y, m - 1, d) / 1000);
+    }
+    return null;
+  }
+
+  // ── Local helpers (trendline-specific, not shared) ─────────────────────
 
   private readNumber(source: any, keys: string[]): number | null {
     for (const key of keys) {
@@ -912,71 +871,5 @@ export class RealtimeDivergenceChartComponent
       if (Number.isFinite(numeric)) return numeric;
     }
     return null;
-  }
-
-  private readOptionalNumber(source: any, keys: string[]): number | undefined {
-    const value = this.readNumber(source, keys);
-    return value === null ? undefined : value;
-  }
-
-  private toUtc(timestamp: number | string): UTCTimestamp {
-    const value = typeof timestamp === "string" ? Number(timestamp) : timestamp;
-    const seconds = value > 1e12 ? Math.floor(value / 1000) : Math.floor(value || 0);
-    return seconds as UTCTimestamp;
-  }
-
-  private normalizeSymbol(value: string): string {
-    return (value || "").trim().toUpperCase();
-  }
-
-  private normalizeSource(value: string): string {
-    const normalized = (value || "").trim().toLowerCase();
-    return normalized === "ohlc" || normalized === "quotes" ? normalized : "";
-  }
-
-  private normalizeDisplayTimeframe(value: string): string {
-    if (!value) return "";
-    const prepared = value.trim().replace(/\u041c/g, "M").replace(/\u043c/g, "m");
-    if (!prepared) return "";
-    if (/^\d+$/.test(prepared)) return `M${prepared}`;
-    const upper = prepared.toUpperCase();
-    if (upper === "MN") return "MN1";
-    if (/^M\d+$/.test(upper)) {
-      const mins = Number(upper.replace("M", ""));
-      if (mins === 60) return "H1";
-      if (mins === 240) return "H4";
-      if (mins === 1440) return "D1";
-      if (mins === 10080) return "W1";
-      if (mins === 43200) return "MN1";
-      return upper;
-    }
-    if (/^H\d+$/.test(upper)) return upper;
-    if (upper === "D1" || upper === "W1" || upper === "MN1" || upper === "Y1") return upper;
-    if (/^\d+M$/.test(upper)) return `M${upper.slice(0, -1)}`;
-    if (/^\d+H$/.test(upper)) return `H${upper.slice(0, -1)}`;
-    if (upper === "1D") return "D1";
-    if (upper === "1W") return "W1";
-    if (upper === "1Y") return "Y1";
-    return "";
-  }
-
-  private toHubTimeframe(displayTimeframe: string): string {
-    const map: Record<string, string> = { M1: "1m", M5: "5m", M15: "15m", M30: "30m", M60: "1h", M240: "4h", M1440: "1d", M10080: "1w", M43200: "1M", H1: "1h", H4: "4h", D1: "1d", W1: "1w", MN1: "1M", Y1: "1y" };
-    return map[displayTimeframe] || displayTimeframe;
-  }
-
-  private timeframeToSeconds(displayTimeframe: string): number {
-    const value = displayTimeframe.toUpperCase().trim();
-    if (value === "MN1") return 30 * 86400;
-    if (value === "W1") return 7 * 86400;
-    if (value === "Y1") return 365 * 86400;
-    if (value.startsWith("M")) return Number(value.replace("M", "")) * 60;
-    if (value.startsWith("H")) return Number(value.replace("H", "")) * 3600;
-    if (value.startsWith("D")) return Number(value.replace("D", "")) * 86400;
-    return 300;
-  }
-
-  private stringifyError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
   }
 }

@@ -145,7 +145,13 @@ export class AppComponent implements OnInit {
     }
 
     this.messageListenerBound = true;
+    const allowedOrigin = window.location.origin;
     window.addEventListener("message", (event: MessageEvent) => {
+      // Accept messages only from same origin or parent that embedded us
+      if (event.origin !== allowedOrigin && event.source !== window.parent) {
+        return;
+      }
+
       const data = event.data;
       if (!data || data.type !== "realtime-widget-config") {
         return;
