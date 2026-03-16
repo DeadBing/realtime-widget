@@ -337,7 +337,7 @@ export class RealtimeTradingviewChartComponent
         vertLines: { visible: true, color: "rgba(0, 0, 0, 0.08)" },
         horzLines: { visible: true, color: "rgba(0, 0, 0, 0.08)" },
       },
-      timeScale: { rightBarStaysOnScroll: true, barSpacing: 14, rightOffset: 5 },
+      timeScale: { rightBarStaysOnScroll: true, barSpacing: 14, rightOffset: 5, timeVisible: true, secondsVisible: false },
     });
 
     const candles = chart.addSeries(CandlestickSeries, {
@@ -702,22 +702,6 @@ export class RealtimeTradingviewChartComponent
         // Beyond existing candles — extrapolate time
         const t = this.candles[n - 1].time + (i - n + 1) * tfSec;
         data.push({ time: Math.round(t) as UTCTimestamp, value });
-      }
-    }
-
-    // Add fractional intersection endpoint if present
-    if (line.rayRight && line.endBarIdx !== undefined && line.endValue !== undefined) {
-      const floorIdx = Math.floor(line.endBarIdx);
-      const frac = line.endBarIdx - floorIdx;
-      if (frac > 0.001) {
-        let iTime: number;
-        if (floorIdx < n - 1) {
-          iTime = this.candles[floorIdx].time + frac * (this.candles[floorIdx + 1].time - this.candles[floorIdx].time);
-        } else {
-          const base = floorIdx < n ? this.candles[floorIdx].time : this.candles[n - 1].time + (floorIdx - n + 1) * tfSec;
-          iTime = base + frac * tfSec;
-        }
-        data.push({ time: Math.round(iTime) as UTCTimestamp, value: line.endValue });
       }
     }
 
