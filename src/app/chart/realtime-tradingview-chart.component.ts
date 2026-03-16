@@ -63,6 +63,7 @@ export class RealtimeTradingviewChartComponent
   @Input() stopOrder: string | null = null;
   @Input() entryPrice: string | null = null;
   @Input() hubTimeOffsetHours = 2;
+  @Input() signalStatus: number | null = null;
 
   @ViewChild("chartContainer", { static: false })
   chartContainerRef!: ElementRef<HTMLDivElement>;
@@ -97,6 +98,7 @@ export class RealtimeTradingviewChartComponent
   private removeReconnectedListener: (() => void) | null = null;
   private readonly initialTfSnapshotCount = 100;
   private readonly refreshTfSnapshotCount = 5;
+  private signalStopAfterTime: number | null = null;
 
   private quotesHubConnectionService = inject(QuotesHubConnectionService);
 
@@ -119,6 +121,7 @@ export class RealtimeTradingviewChartComponent
     if (changes["initialCandles"]) this.seedInitialCandles();
     if (changes["objects"]) this.renderTrendlines();
     if (changes["entryPrice"] || changes["takeProfit"] || changes["stopOrder"]) this.renderTradeLevels();
+    if (changes["signalStatus"]) this.onSignalStatusChange();
     if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"]) void this.syncRealtime();
   }
 
@@ -258,6 +261,10 @@ export class RealtimeTradingviewChartComponent
     if (evt.type === "candle" && (evt.eventType === "candle_close" || evt.eventType === "candle_update") && evt.tf === "1s") {
       const oneSecondCandle = normalizeCandle(evt.candle, this.hubTimeOffsetSeconds);
       if (!oneSecondCandle) return;
+      if (this.signalStopAfterTime !== null) {
+        const bucketTime = Math.floor(oneSecondCandle.time / this.tfSeconds) * this.tfSeconds;
+        if (bucketTime > this.signalStopAfterTime) return;
+      }
       const result = updateLastTfCandle(this.candles, oneSecondCandle, this.tfSeconds, this.lastProcessed1sTime);
       this.candles = result.candles;
       this.lastProcessed1sTime = result.lastProcessed1sTime;
@@ -407,6 +414,8 @@ export class RealtimeTradingviewChartComponent
     this.candles = seeded;
     this.seededFromChartData = true;
     this.seededHistoryEndTime = seeded[seeded.length - 1].time;
+    this.signalStopAfterTime = null; // force recalculation for new candle set
+    this.onSignalStatusChange();
     this.renderCandles();
   }
 
@@ -416,12 +425,27 @@ export class RealtimeTradingviewChartComponent
   }
 
   private shouldAcceptIncomingCandle(candle: Candle): boolean {
-    if (!this.seededFromChartData || this.seededHistoryEndTime === null) return true;
-    return candle.time > this.seededHistoryEndTime;
+    if (this.seededFromChartData && this.seededHistoryEndTime !== null && candle.time <= this.seededHistoryEndTime) return false;
+    if (this.signalStopAfterTime !== null && candle.time > this.signalStopAfterTime) return false;
+    return true;
   }
 
   private shouldUseOneSecondAggregation(src: string): boolean {
     return src === "quotes";
+  }
+
+  private onSignalStatusChange(): void {
+    const isCompleted = typeof this.signalStatus === "number" && this.signalStatus !== 0;
+    if (!isCompleted) {
+      this.signalStopAfterTime = null;
+      return;
+    }
+    if (this.signalStopAfterTime !== null) return; // already frozen
+    const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe));
+    const lastTime = this.candles.length
+      ? this.candles[this.candles.length - 1].time
+      : this.seededHistoryEndTime;
+    if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
   }
 
   // ── Snapshot refresh with visibility check ─────────────────────────────

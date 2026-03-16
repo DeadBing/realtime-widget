@@ -27,6 +27,7 @@ type ChartMode = "pattern" | "divergence";
         [takeProfit]="takeProfit"
         [stopOrder]="stopOrder"
         [entryPrice]="entryPrice"
+        [signalStatus]="signalStatus"
       ></app-realtime-divergence-chart>
     } @else {
       <app-realtime-tradingview-chart
@@ -40,6 +41,7 @@ type ChartMode = "pattern" | "divergence";
         [takeProfit]="takeProfit"
         [stopOrder]="stopOrder"
         [entryPrice]="entryPrice"
+        [signalStatus]="signalStatus"
       ></app-realtime-tradingview-chart>
     }
   `,
@@ -68,6 +70,7 @@ export class AppComponent implements OnInit {
   takeProfit: string | null = null;
   stopOrder: string | null = null;
   entryPrice: string | null = null;
+  signalStatus: number | null = null;
   chartMode: ChartMode | null = null;
 
   private readonly platformId = inject(PLATFORM_ID);
@@ -112,6 +115,8 @@ export class AppComponent implements OnInit {
     this.takeProfit = params.get("takeProfit") || null;
     this.stopOrder = params.get("stopOrder") || null;
     this.entryPrice = params.get("entryPrice") || null;
+    const rawSignalStatus = params.get("signalStatus");
+    this.signalStatus = rawSignalStatus !== null ? Number(rawSignalStatus) : null;
 
     this.initialCandles = this.decodeArrayParam(params.get("initialCandles"));
     this.objects = this.decodeArrayParam(params.get("objects"));
@@ -198,6 +203,9 @@ export class AppComponent implements OnInit {
       }
       if (data.entryPrice !== undefined) {
         this.entryPrice = data.entryPrice;
+      }
+      if (data.signalStatus !== undefined) {
+        this.signalStatus = data.signalStatus !== null ? Number(data.signalStatus) : null;
       }
     });
   }

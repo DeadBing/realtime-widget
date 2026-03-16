@@ -88,6 +88,7 @@ export class RealtimeDivergenceChartComponent
   @Input() stopOrder: string | null = null;
   @Input() entryPrice: string | null = null;
   @Input() hubTimeOffsetHours = 2;
+  @Input() signalStatus: number | null = null;
 
   @ViewChild("chartContainer", { static: false })
   chartContainerRef!: ElementRef<HTMLDivElement>;
@@ -133,6 +134,7 @@ export class RealtimeDivergenceChartComponent
   private currentKey = "";
   private syncToken = 0;
   private lastProcessed1sTime: number | null = null;
+  private signalStopAfterTime: number | null = null;
   private readonly initialTfSnapshotCount = 300;
   private readonly refreshTfSnapshotCount = 5;
   private readonly indicatorWarmupLimit = 300;
@@ -177,6 +179,7 @@ export class RealtimeDivergenceChartComponent
       this.tradeLevelsRendered = false;
       this.renderTradeLevels();
     }
+    if (changes["signalStatus"]) this.onSignalStatusChange();
     if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"] || changes["hubTimeOffsetHours"]) void this.syncRealtime();
   }
 
@@ -251,16 +254,30 @@ export class RealtimeDivergenceChartComponent
     this.tradeLevelsRendered = false;
     this.seededFromChartData = this.articleSeedCandles.length > 0;
     this.seededHistoryEndTime = this.seededFromChartData ? this.articleSeedCandles[this.articleSeedCandles.length - 1].time : null;
+    this.signalStopAfterTime = null;
     if (this.seededFromChartData) {
       this.candles = [...this.articleSeedCandles];
       this.error = null;
       this.autoFitApplied = false;
       this.followRealtime = true;
+      this.onSignalStatusChange();
       this.renderMarketDataFull();
     } else if (!this.active) {
       this.candles = [];
+      this.onSignalStatusChange();
       this.renderMarketDataFull();
+    } else {
+      this.onSignalStatusChange();
     }
+  }
+
+  private onSignalStatusChange(): void {
+    const isCompleted = typeof this.signalStatus === "number" && this.signalStatus !== 0;
+    if (!isCompleted) { this.signalStopAfterTime = null; return; }
+    if (this.signalStopAfterTime !== null) return; // already frozen
+    const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe));
+    const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : this.seededHistoryEndTime;
+    if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
   }
 
   // ── Realtime lifecycle ─────────────────────────────────────────────────
@@ -364,6 +381,10 @@ export class RealtimeDivergenceChartComponent
     if (evt.type === "candle" && (evt.eventType === "candle_close" || evt.eventType === "candle_update") && evt.tf === "1s") {
       const candle = normalizeCandle(evt.candle, this.hubTimeOffsetSeconds);
       if (!candle) return;
+      if (this.signalStopAfterTime !== null) {
+        const bucketTime = Math.floor(candle.time / this.tfSeconds) * this.tfSeconds;
+        if (bucketTime > this.signalStopAfterTime) return;
+      }
       const isNewBucket = this.candles.length > 0 && Math.floor(candle.time / this.tfSeconds) * this.tfSeconds > this.candles[this.candles.length - 1].time;
       const result = updateLastTfCandle(this.candles, candle, this.tfSeconds, this.lastProcessed1sTime);
       this.candles = result.candles;
@@ -582,12 +603,17 @@ export class RealtimeDivergenceChartComponent
   }
 
   private filterIncomingCandlesForSeededHistory(incoming: Candle[]): Candle[] {
-    if (!this.seededFromChartData || this.seededHistoryEndTime === null) return incoming;
+    if (!this.seededFromChartData || this.seededHistoryEndTime === null) {
+      return this.signalStopAfterTime !== null ? incoming.filter((c) => c.time <= this.signalStopAfterTime!) : incoming;
+    }
     const overlapSeconds = Math.max(this.tfSeconds * 2, 1);
-    return incoming.filter((c) => c.time >= this.seededHistoryEndTime! - overlapSeconds);
+    let filtered = incoming.filter((c) => c.time >= this.seededHistoryEndTime! - overlapSeconds);
+    if (this.signalStopAfterTime !== null) filtered = filtered.filter((c) => c.time <= this.signalStopAfterTime!);
+    return filtered;
   }
 
   private shouldAcceptIncomingCandle(candle: Candle): boolean {
+    if (this.signalStopAfterTime !== null && candle.time > this.signalStopAfterTime) return false;
     if (!this.seededFromChartData || this.seededHistoryEndTime === null) return true;
     const overlapSeconds = Math.max(this.tfSeconds * 2, 1);
     return candle.time >= this.seededHistoryEndTime - overlapSeconds;
