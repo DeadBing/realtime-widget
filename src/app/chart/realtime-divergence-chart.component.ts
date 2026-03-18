@@ -2,9 +2,11 @@ import {
   AfterViewInit,
   Component,
   ElementRef,
+  EventEmitter,
   Input,
   OnChanges,
   OnDestroy,
+  Output,
   PLATFORM_ID,
   SimpleChanges,
   ViewChild,
@@ -89,6 +91,7 @@ export class RealtimeDivergenceChartComponent
   @Input() entryPrice: string | null = null;
   @Input() hubTimeOffsetHours = 2;
   @Input() signalStatus: number | null = null;
+  @Output() currentPriceChange = new EventEmitter<number>();
 
   @ViewChild("chartContainer", { static: false })
   chartContainerRef!: ElementRef<HTMLDivElement>;
@@ -138,6 +141,7 @@ export class RealtimeDivergenceChartComponent
   private readonly initialTfSnapshotCount = 300;
   private readonly refreshTfSnapshotCount = 5;
   private readonly indicatorWarmupLimit = 300;
+  private lastEmittedPrice: number | null = null;
   private readonly defaultRightOffsetBars = 3;
   private readonly realtimeFollowThresholdBars = 1.5;
   private readonly tradingViewPalette = {
@@ -489,6 +493,7 @@ export class RealtimeDivergenceChartComponent
     this.macdLineSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.macd })));
 
     this.handleAutoFitAndScroll();
+    this.emitCurrentPrice();
   }
 
   /** Lightweight render: only updates price candlestick. Skips indicators. */
@@ -504,6 +509,7 @@ export class RealtimeDivergenceChartComponent
     if (this.active && this.followRealtime) {
       requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
     }
+    this.emitCurrentPrice();
   }
 
   private handleAutoFitAndScroll(): void {
@@ -712,6 +718,17 @@ export class RealtimeDivergenceChartComponent
     this.macdHistogramSeries = null;
     this.macdSignalSeries = null;
     this.macdLineSeries = null;
+  }
+
+  private emitCurrentPrice(): void {
+    const nextPrice = Number(this.candles[this.candles.length - 1]?.close);
+    if (!Number.isFinite(nextPrice)) return;
+
+    const roundedPrice = Math.round(nextPrice * 100000) / 100000;
+    if (this.lastEmittedPrice === roundedPrice) return;
+
+    this.lastEmittedPrice = roundedPrice;
+    this.currentPriceChange.emit(roundedPrice);
   }
 
   // ── Visible range tracking ─────────────────────────────────────────────

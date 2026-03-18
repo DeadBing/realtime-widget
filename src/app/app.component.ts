@@ -28,6 +28,7 @@ type ChartMode = "pattern" | "divergence";
         [stopOrder]="stopOrder"
         [entryPrice]="entryPrice"
         [signalStatus]="signalStatus"
+        (currentPriceChange)="publishCurrentPrice($event)"
       ></app-realtime-divergence-chart>
     } @else {
       <app-realtime-tradingview-chart
@@ -42,6 +43,7 @@ type ChartMode = "pattern" | "divergence";
         [stopOrder]="stopOrder"
         [entryPrice]="entryPrice"
         [signalStatus]="signalStatus"
+        (currentPriceChange)="publishCurrentPrice($event)"
       ></app-realtime-tradingview-chart>
     }
   `,
@@ -76,6 +78,7 @@ export class AppComponent implements OnInit {
   private readonly platformId = inject(PLATFORM_ID);
   private readonly isBrowser = isPlatformBrowser(this.platformId);
   private messageListenerBound = false;
+  private lastPublishedPrice: number | null = null;
 
   private readonly widgetConfig = inject(WidgetConfigService);
 
@@ -239,6 +242,29 @@ export class AppComponent implements OnInit {
     if (payloadTimeframe) {
       this.timeframe = payloadTimeframe;
     }
+  }
+
+  publishCurrentPrice(currentPrice: number): void {
+    if (!this.isBrowser || !Number.isFinite(currentPrice)) {
+      return;
+    }
+
+    const roundedPrice = Math.round(currentPrice * 100000) / 100000;
+    if (this.lastPublishedPrice === roundedPrice) {
+      return;
+    }
+
+    this.lastPublishedPrice = roundedPrice;
+    window.parent.postMessage(
+      {
+        type: "realtime-widget-price",
+        symbol: this.symbol,
+        timeframe: this.timeframe,
+        source: this.source,
+        currentPrice: roundedPrice,
+      },
+      "*",
+    );
   }
 
   private normalizeChartData(rawChartData: unknown): Record<string, any> | null {

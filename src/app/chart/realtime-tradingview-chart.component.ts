@@ -2,10 +2,12 @@ import {
   AfterViewInit,
   Component,
   ElementRef,
+  EventEmitter,
   inject,
   Input,
   OnChanges,
   OnDestroy,
+  Output,
   PLATFORM_ID,
   SimpleChanges,
   ViewChild,
@@ -64,6 +66,7 @@ export class RealtimeTradingviewChartComponent
   @Input() entryPrice: string | null = null;
   @Input() hubTimeOffsetHours = 2;
   @Input() signalStatus: number | null = null;
+  @Output() currentPriceChange = new EventEmitter<number>();
 
   @ViewChild("chartContainer", { static: false })
   chartContainerRef!: ElementRef<HTMLDivElement>;
@@ -99,6 +102,7 @@ export class RealtimeTradingviewChartComponent
   private readonly initialTfSnapshotCount = 100;
   private readonly refreshTfSnapshotCount = 5;
   private signalStopAfterTime: number | null = null;
+  private lastEmittedPrice: number | null = null;
 
   private quotesHubConnectionService = inject(QuotesHubConnectionService);
 
@@ -379,6 +383,7 @@ export class RealtimeTradingviewChartComponent
     this.candlesRef.setData(data);
     this.renderTrendlines();
     this.lastTrendlineAnchorTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
+    this.emitCurrentPrice();
 
     if (!data.length || this.autoFitApplied) return;
     this.chartRef.timeScale().fitContent();
@@ -403,6 +408,8 @@ export class RealtimeTradingviewChartComponent
       this.lastTrendlineAnchorTime = last.time;
       this.renderTrendlines();
     }
+
+    this.emitCurrentPrice();
   }
 
   // ── Seed / filter ──────────────────────────────────────────────────────
@@ -752,5 +759,20 @@ export class RealtimeTradingviewChartComponent
     }
     points.push({ time: Math.round(endX) as UTCTimestamp, value: val });
     return points;
+  }
+
+  private emitCurrentPrice(): void {
+    const nextPrice = Number(this.candles[this.candles.length - 1]?.close);
+    if (!Number.isFinite(nextPrice)) {
+      return;
+    }
+
+    const roundedPrice = Math.round(nextPrice * 100000) / 100000;
+    if (this.lastEmittedPrice === roundedPrice) {
+      return;
+    }
+
+    this.lastEmittedPrice = roundedPrice;
+    this.currentPriceChange.emit(roundedPrice);
   }
 }
