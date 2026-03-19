@@ -130,6 +130,7 @@ export class RealtimeDivergenceChartComponent
   private autoFitApplied = false;
   private pricePrecisionApplied = false;
   private tradeLevelsRendered = false;
+  private tradeLevelsEndTime = 0;
   private currentSymbol = "";
   private currentSource = "";
   private hubTf = "";
@@ -565,7 +566,11 @@ export class RealtimeDivergenceChartComponent
     this.macdSignalSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.signal })));
     this.macdLineSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.macd })));
 
-    if (!this.tradeLevelsRendered) this.renderTradeLevels();
+    if (!this.tradeLevelsRendered) {
+      this.renderTradeLevels();
+    } else if (!this.signalCompleted && this.candles.length && this.candles[this.candles.length - 1].time >= this.tradeLevelsEndTime) {
+      this.renderTradeLevels();
+    }
     this.handleAutoFitAndScroll();
     this.emitCurrentPrice();
   }
@@ -621,6 +626,7 @@ export class RealtimeDivergenceChartComponent
     const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe) || "M5");
     const startTime = this.getTradeLevelsStartTime();
     const endTime = this.getTradeLevelsEndTime(tfSec);
+    this.tradeLevelsEndTime = endTime;
 
     if (entry !== null && target !== null) {
       const series = this.chartRef.addSeries(BaselineSeries, {
@@ -941,7 +947,7 @@ export class RealtimeDivergenceChartComponent
 
   private getTradeLevelsEndTime(tfSec: number): number {
     if (this.signalCompleted && this.signalCrossingTime !== null) return this.signalCrossingTime;
-    return (this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000)) + tfSec * this.defaultRightOffsetBars;
+    return (this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000)) + tfSec * 15;
   }
 
   private getTradeLevelsStartTime(): number {

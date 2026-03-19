@@ -95,6 +95,7 @@ export class RealtimeTradingviewChartComponent
   private autoFitApplied = false;
   private lastTrendlineAnchorTime: number | null = null;
   private tradeLevelPriceLines: Array<{ series: ISeriesApi<"Candlestick">; line: any }> = [];
+  private tradeLevelsEndTime = 0;
   private tfSnapshotRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private seededHistoryEndTime: number | null = null;
   private lastProcessed1sTime: number | null = null;
@@ -396,6 +397,9 @@ export class RealtimeTradingviewChartComponent
 
     this.candlesRef.setData(data);
     this.renderTrendlines();
+    if (!this.signalCompleted && this.candles.length && this.candles[this.candles.length - 1].time >= this.tradeLevelsEndTime) {
+      this.renderTradeLevels();
+    }
     this.lastTrendlineAnchorTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
     this.emitCurrentPrice();
 
@@ -676,6 +680,7 @@ export class RealtimeTradingviewChartComponent
 
     const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe));
     const { startX, endX } = this.getTradeLevelsRange(tfSec);
+    this.tradeLevelsEndTime = endX;
 
     if (entry !== null && target !== null) {
       const isLong = target > entry;
