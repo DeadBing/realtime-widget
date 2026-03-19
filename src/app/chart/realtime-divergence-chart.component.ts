@@ -138,6 +138,7 @@ export class RealtimeDivergenceChartComponent
   private syncToken = 0;
   private lastProcessed1sTime: number | null = null;
   private signalStopAfterTime: number | null = null;
+  private signalCompleted = false;
   private readonly initialTfSnapshotCount = 300;
   private readonly refreshTfSnapshotCount = 5;
   private readonly indicatorWarmupLimit = 300;
@@ -259,6 +260,7 @@ export class RealtimeDivergenceChartComponent
     this.seededFromChartData = this.articleSeedCandles.length > 0;
     this.seededHistoryEndTime = this.seededFromChartData ? this.articleSeedCandles[this.articleSeedCandles.length - 1].time : null;
     this.signalStopAfterTime = null;
+    this.signalCompleted = false;
     if (this.seededFromChartData) {
       this.candles = [...this.articleSeedCandles];
       this.error = null;
@@ -277,11 +279,64 @@ export class RealtimeDivergenceChartComponent
 
   private onSignalStatusChange(): void {
     const isCompleted = typeof this.signalStatus === "number" && this.signalStatus !== 0;
-    if (!isCompleted) { this.signalStopAfterTime = null; return; }
-    if (this.signalStopAfterTime !== null) return; // already frozen
+    if (!isCompleted) { this.signalCompleted = false; this.signalStopAfterTime = null; return; }
+    this.signalCompleted = true;
+    this.tryComputeSignalStopTime();
+  }
+
+  /** Scan candle data to find where price crossed Target/Stop, then set signalStopAfterTime = crossing + 2 candles. */
+  private tryComputeSignalStopTime(): void {
+    if (this.signalStopAfterTime !== null) return; // already resolved
+
     const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe));
-    const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : this.seededHistoryEndTime;
-    if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+
+    // No seed data — fall back to old behavior (last candle + 2)
+    if (!this.seededFromChartData || this.seededHistoryEndTime === null) {
+      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
+      if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+      return;
+    }
+
+    const entry = parsePrice(this.entryPrice);
+    const target = parsePrice(this.takeProfit);
+    const stop = parsePrice(this.stopOrder);
+
+    // No levels to scan against — fall back to old behavior
+    if (entry === null || (target === null && stop === null)) {
+      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
+      if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+      return;
+    }
+
+    const isLong = target !== null ? target > entry : (stop !== null ? stop < entry : true);
+
+    // Scan candles from seed end forward for level crossing
+    let candlesPastSeed = 0;
+    for (const c of this.candles) {
+      if (c.time < this.seededHistoryEndTime) continue;
+      candlesPastSeed++;
+
+      let hit = false;
+      if (target !== null) {
+        if (isLong && c.high >= target) hit = true;
+        if (!isLong && c.low <= target) hit = true;
+      }
+      if (stop !== null) {
+        if (isLong && c.low <= stop) hit = true;
+        if (!isLong && c.high >= stop) hit = true;
+      }
+
+      if (hit) {
+        this.signalStopAfterTime = c.time + 2 * tfSec;
+        return;
+      }
+    }
+
+    // Safety fallback: many candles past seed but no crossing found (e.g. manual close)
+    if (candlesPastSeed >= 50) {
+      const lastTime = this.candles[this.candles.length - 1].time;
+      this.signalStopAfterTime = lastTime + 2 * tfSec;
+    }
   }
 
   // ── Realtime lifecycle ─────────────────────────────────────────────────
@@ -462,6 +517,13 @@ export class RealtimeDivergenceChartComponent
   /** Full render: price + all indicators. Used on snapshot, candle_close, seed. */
   private renderMarketDataFull(): void {
     if (!this.priceSeries || !this.stochasticKSeries || !this.stochasticDSeries || !this.rsiSeries || !this.macdHistogramSeries || !this.macdSignalSeries || !this.macdLineSeries || !this.chartRef) return;
+    if (this.signalCompleted && this.signalStopAfterTime === null) {
+      this.tryComputeSignalStopTime();
+    }
+    if (this.signalStopAfterTime !== null && this.candles.length) {
+      const trimIdx = this.candles.findIndex((c) => c.time > this.signalStopAfterTime!);
+      if (trimIdx >= 0) this.candles = this.candles.slice(0, trimIdx);
+    }
     if (!this.candles.length) {
       this.priceSeries.setData([]);
       this.stochasticKSeries.setData([]);
