@@ -102,6 +102,7 @@ export class RealtimeTradingviewChartComponent
   private readonly initialTfSnapshotCount = 100;
   private readonly refreshTfSnapshotCount = 5;
   private signalStopAfterTime: number | null = null;
+  private signalCrossingTime: number | null = null;
   private signalCompleted = false;
   private lastEmittedPrice: number | null = null;
 
@@ -376,12 +377,17 @@ export class RealtimeTradingviewChartComponent
 
   private renderCandles(): void {
     if (!this.chartRef || !this.candlesRef) return;
+    const prevStopTime = this.signalStopAfterTime;
     if (this.signalCompleted && this.signalStopAfterTime === null) {
       this.tryComputeSignalStopTime();
     }
     if (this.signalStopAfterTime !== null && this.candles.length) {
       const trimIdx = this.candles.findIndex((c) => c.time > this.signalStopAfterTime!);
       if (trimIdx >= 0) this.candles = this.candles.slice(0, trimIdx);
+    }
+    // Re-render trade level rectangles when crossing is resolved (affects their end time)
+    if (prevStopTime === null && this.signalStopAfterTime !== null) {
+      this.renderTradeLevels();
     }
 
     const data = this.candles
@@ -433,6 +439,7 @@ export class RealtimeTradingviewChartComponent
     this.seededFromChartData = true;
     this.seededHistoryEndTime = seedEndTime;
     this.signalStopAfterTime = null; // force recalculation for new candle set
+    this.signalCrossingTime = null;
     this.signalCompleted = false;
     this.onSignalStatusChange();
     this.renderCandles();
@@ -455,7 +462,7 @@ export class RealtimeTradingviewChartComponent
 
   private onSignalStatusChange(): void {
     const isCompleted = typeof this.signalStatus === "number" && this.signalStatus !== 0;
-    if (!isCompleted) { this.signalCompleted = false; this.signalStopAfterTime = null; return; }
+    if (!isCompleted) { this.signalCompleted = false; this.signalStopAfterTime = null; this.signalCrossingTime = null; return; }
     this.signalCompleted = true;
     this.tryComputeSignalStopTime();
   }
@@ -501,6 +508,7 @@ export class RealtimeTradingviewChartComponent
       }
 
       if (hit) {
+        this.signalCrossingTime = c.time;
         this.signalStopAfterTime = c.time + 2 * tfSec;
         return;
       }
@@ -511,6 +519,7 @@ export class RealtimeTradingviewChartComponent
       const lastTime = this.candles[this.candles.length - 1].time;
       const now = Math.floor(Date.now() / 1000);
       if (lastTime >= now - 5 * tfSec) {
+        this.signalCrossingTime = lastTime;
         this.signalStopAfterTime = lastTime + 2 * tfSec;
       }
     }
@@ -724,6 +733,11 @@ export class RealtimeTradingviewChartComponent
     const lastLiveCandle = this.candles.length ? this.candles[this.candles.length - 1] : null;
     if (lastInitialCandle) startX = Number(toUtc(lastInitialCandle.time));
     else if (lastLiveCandle) startX = lastLiveCandle.time;
+
+    // For settled signals with a known crossing, end the rectangles at the crossing candle
+    if (this.signalCompleted && this.signalCrossingTime !== null) {
+      return { startX, endX: this.signalCrossingTime };
+    }
 
     let endX = startX + tfSec * 15;
     const objects = Array.isArray(this.objects) ? this.objects : [];

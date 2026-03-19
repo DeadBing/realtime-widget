@@ -138,6 +138,7 @@ export class RealtimeDivergenceChartComponent
   private syncToken = 0;
   private lastProcessed1sTime: number | null = null;
   private signalStopAfterTime: number | null = null;
+  private signalCrossingTime: number | null = null;
   private signalCompleted = false;
   private readonly initialTfSnapshotCount = 300;
   private readonly refreshTfSnapshotCount = 5;
@@ -260,6 +261,7 @@ export class RealtimeDivergenceChartComponent
     this.seededFromChartData = this.articleSeedCandles.length > 0;
     this.seededHistoryEndTime = this.seededFromChartData ? this.articleSeedCandles[this.articleSeedCandles.length - 1].time : null;
     this.signalStopAfterTime = null;
+    this.signalCrossingTime = null;
     this.signalCompleted = false;
     if (this.seededFromChartData) {
       // Preserve candles past seed end that arrived from snapshots before seed data was set
@@ -281,7 +283,7 @@ export class RealtimeDivergenceChartComponent
 
   private onSignalStatusChange(): void {
     const isCompleted = typeof this.signalStatus === "number" && this.signalStatus !== 0;
-    if (!isCompleted) { this.signalCompleted = false; this.signalStopAfterTime = null; return; }
+    if (!isCompleted) { this.signalCompleted = false; this.signalStopAfterTime = null; this.signalCrossingTime = null; return; }
     this.signalCompleted = true;
     this.tryComputeSignalStopTime();
   }
@@ -327,6 +329,7 @@ export class RealtimeDivergenceChartComponent
       }
 
       if (hit) {
+        this.signalCrossingTime = c.time;
         this.signalStopAfterTime = c.time + 2 * tfSec;
         return;
       }
@@ -337,6 +340,7 @@ export class RealtimeDivergenceChartComponent
       const lastTime = this.candles[this.candles.length - 1].time;
       const now = Math.floor(Date.now() / 1000);
       if (lastTime >= now - 5 * tfSec) {
+        this.signalCrossingTime = lastTime;
         this.signalStopAfterTime = lastTime + 2 * tfSec;
       }
     }
@@ -520,12 +524,16 @@ export class RealtimeDivergenceChartComponent
   /** Full render: price + all indicators. Used on snapshot, candle_close, seed. */
   private renderMarketDataFull(): void {
     if (!this.priceSeries || !this.stochasticKSeries || !this.stochasticDSeries || !this.rsiSeries || !this.macdHistogramSeries || !this.macdSignalSeries || !this.macdLineSeries || !this.chartRef) return;
+    const prevStopTime = this.signalStopAfterTime;
     if (this.signalCompleted && this.signalStopAfterTime === null) {
       this.tryComputeSignalStopTime();
     }
     if (this.signalStopAfterTime !== null && this.candles.length) {
       const trimIdx = this.candles.findIndex((c) => c.time > this.signalStopAfterTime!);
       if (trimIdx >= 0) this.candles = this.candles.slice(0, trimIdx);
+    }
+    if (prevStopTime === null && this.signalStopAfterTime !== null) {
+      this.tradeLevelsRendered = false;
     }
     if (!this.candles.length) {
       this.priceSeries.setData([]);
@@ -557,6 +565,7 @@ export class RealtimeDivergenceChartComponent
     this.macdSignalSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.signal })));
     this.macdLineSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.macd })));
 
+    if (!this.tradeLevelsRendered) this.renderTradeLevels();
     this.handleAutoFitAndScroll();
     this.emitCurrentPrice();
   }
@@ -931,6 +940,7 @@ export class RealtimeDivergenceChartComponent
   }
 
   private getTradeLevelsEndTime(tfSec: number): number {
+    if (this.signalCompleted && this.signalCrossingTime !== null) return this.signalCrossingTime;
     return (this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000)) + tfSec * this.defaultRightOffsetBars;
   }
 
