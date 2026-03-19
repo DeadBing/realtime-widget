@@ -426,9 +426,12 @@ export class RealtimeTradingviewChartComponent
     if (!this.initialCandles?.length || !this.candlesRef || !this.chartRef) return;
     const seeded = normalizeCandles(this.initialCandles);
     if (!seeded.length) return;
-    this.candles = seeded;
+    const seedEndTime = seeded[seeded.length - 1].time;
+    // Preserve candles past seed end that arrived from snapshots before seed data was set
+    const postSeedCandles = this.candles.filter((c) => c.time > seedEndTime);
+    this.candles = postSeedCandles.length ? mergeCandles(seeded, postSeedCandles) : seeded;
     this.seededFromChartData = true;
-    this.seededHistoryEndTime = seeded[seeded.length - 1].time;
+    this.seededHistoryEndTime = seedEndTime;
     this.signalStopAfterTime = null; // force recalculation for new candle set
     this.signalCompleted = false;
     this.onSignalStatusChange();
@@ -484,10 +487,8 @@ export class RealtimeTradingviewChartComponent
     const isLong = target !== null ? target > entry : (stop !== null ? stop < entry : true);
 
     // Scan candles from seed end forward for level crossing
-    let candlesPastSeed = 0;
     for (const c of this.candles) {
       if (c.time < this.seededHistoryEndTime) continue;
-      candlesPastSeed++;
 
       let hit = false;
       if (target !== null) {
@@ -505,10 +506,13 @@ export class RealtimeTradingviewChartComponent
       }
     }
 
-    // Safety fallback: many candles past seed but no crossing found (e.g. manual close)
-    if (candlesPastSeed >= 50) {
+    // Safety fallback: we have recent data but crossing not found (manual close, bid/ask spread, etc.)
+    if (this.candles.length) {
       const lastTime = this.candles[this.candles.length - 1].time;
-      this.signalStopAfterTime = lastTime + 2 * tfSec;
+      const now = Math.floor(Date.now() / 1000);
+      if (lastTime >= now - 5 * tfSec) {
+        this.signalStopAfterTime = lastTime + 2 * tfSec;
+      }
     }
   }
 
