@@ -82,7 +82,7 @@ export class RealtimeDivergenceChartComponent
   @Input() timeframe = "M15";
   @Input() source = "ohlc";
   @Input() active = false;
-  @Input() height = 700;
+  @Input() height = 800;
   @Input() initialCandles: any[] | null = null;
   @Input() trendLines: any[] | null = null;
   @Input() objects: any[] | null = null;
@@ -225,10 +225,10 @@ export class RealtimeDivergenceChartComponent
     });
 
     while (chart.panes().length < 4) chart.addPane(true);
-    chart.panes()[0]?.setStretchFactor(6);
+    chart.panes()[0]?.setStretchFactor(9);
     chart.panes()[1]?.setStretchFactor(2);
     chart.panes()[2]?.setStretchFactor(2);
-    chart.panes()[3]?.setStretchFactor(2.5);
+    chart.panes()[3]?.setStretchFactor(2);
 
     const oscaleProvider = () => ({ priceRange: { minValue: 0, maxValue: 100 } });
     this.priceSeries = chart.addSeries(CandlestickSeries, {

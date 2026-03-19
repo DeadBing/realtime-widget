@@ -52,7 +52,8 @@ type ChartMode = "pattern" | "divergence";
       :host {
         display: block;
         width: 100%;
-        height: 100vh;
+        max-width: 1280px;
+        height: 800px;
         margin: 0;
         padding: 0;
         overflow: hidden;
@@ -65,7 +66,7 @@ export class AppComponent implements OnInit {
   timeframe = "M15";
   source = "ohlc";
   active = true;
-  height = 500;
+  height = 800;
   initialCandles: any[] | null = null;
   objects: any[] | null = null;
   trendLines: any[] | null = null;

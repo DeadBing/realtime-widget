@@ -58,7 +58,7 @@ export class RealtimeTradingviewChartComponent
   @Input() timeframe = "M15";
   @Input() source = "ohlc";
   @Input() active = false;
-  @Input() height = 500;
+  @Input() height = 800;
   @Input() initialCandles: any[] | null = null;
   @Input() objects: any[] | null = null;
   @Input() takeProfit: string | null = null;
