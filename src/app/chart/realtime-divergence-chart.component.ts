@@ -189,7 +189,12 @@ export class RealtimeDivergenceChartComponent
       this.tradeLevelsRendered = false;
       this.renderTradeLevels();
     }
-    if (changes["signalStatus"]) this.onSignalStatusChange();
+    if (changes["signalStatus"]) {
+      this.onSignalStatusChange();
+      this.tradeLevelsRendered = false;
+      this.renderMarketDataFull();
+      this.renderTrendlines();
+    }
     if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"] || changes["hubTimeOffsetHours"]) void this.syncRealtime();
   }
 
@@ -276,7 +281,7 @@ export class RealtimeDivergenceChartComponent
       this.followRealtime = true;
       this.onSignalStatusChange();
       this.renderMarketDataFull();
-    } else if (!this.active) {
+    } else if (!this.shouldRunRealtime()) {
       this.candles = [];
       this.onSignalStatusChange();
       this.renderMarketDataFull();
@@ -290,6 +295,10 @@ export class RealtimeDivergenceChartComponent
     if (!isCompleted) { this.signalCompleted = false; this.signalStopAfterTime = null; this.signalCrossingTime = null; return; }
     this.signalCompleted = true;
     this.tryComputeSignalStopTime();
+  }
+
+  private shouldRunRealtime(): boolean {
+    return this.active || (this.signalCompleted && this.signalStopAfterTime === null);
   }
 
   /** Scan candle data to find where price crossed Target/Stop, then set signalStopAfterTime = crossing + 2 candles. */
@@ -348,6 +357,14 @@ export class RealtimeDivergenceChartComponent
 
     const lastTime = this.candles[this.candles.length - 1].time;
 
+    // Settled charts that are already inactive will not receive post-seed
+    // candles, so use the last visible candle as the terminal point.
+    if (!this.active && this.signalCompleted) {
+      this.signalCrossingTime = lastTime;
+      this.signalStopAfterTime = lastTime;
+      return;
+    }
+
     // When chartData is seeded from the article, do not freeze the chart at
     // "last seed candle + 2 bars" before realtime candles have actually moved
     // past the seed boundary. Otherwise completed divergence articles stop
@@ -374,7 +391,7 @@ export class RealtimeDivergenceChartComponent
     const sym = normalizeSymbol(this.symbol);
     const tf = normalizeDisplayTimeframe(this.timeframe);
     const src = normalizeSource(this.source);
-    if (!this.active || !sym || !tf || !src) {
+    if (!this.shouldRunRealtime() || !sym || !tf || !src) {
       await this.teardownRealtime();
       if (token !== this.syncToken) return;
       this.loading = false;

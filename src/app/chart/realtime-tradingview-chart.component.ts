@@ -128,7 +128,12 @@ export class RealtimeTradingviewChartComponent
     if (changes["initialCandles"]) this.seedInitialCandles();
     if (changes["objects"]) this.renderTrendlines();
     if (changes["entryPrice"] || changes["takeProfit"] || changes["stopOrder"]) this.renderTradeLevels();
-    if (changes["signalStatus"]) this.onSignalStatusChange();
+    if (changes["signalStatus"]) {
+      this.onSignalStatusChange();
+      this.renderCandles();
+      this.renderTradeLevels();
+      void this.syncRealtime();
+    }
     if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"]) void this.syncRealtime();
   }
 
@@ -147,7 +152,7 @@ export class RealtimeTradingviewChartComponent
     const tf = normalizeDisplayTimeframe(this.timeframe);
     const src = normalizeSource(this.source);
 
-    if (!this.active || !sym || !tf || !src) {
+    if (!this.shouldRunRealtime() || !sym || !tf || !src) {
       await this.teardownRealtime();
       if (token !== this.syncToken) return;
       this.loading = false;
@@ -471,6 +476,10 @@ export class RealtimeTradingviewChartComponent
     this.tryComputeSignalStopTime();
   }
 
+  private shouldRunRealtime(): boolean {
+    return this.active || (this.signalCompleted && this.signalStopAfterTime === null);
+  }
+
   /** Scan candle data to find where price crossed Target/Stop, then set signalStopAfterTime = crossing + 2 candles. */
   private tryComputeSignalStopTime(): void {
     if (this.signalStopAfterTime !== null) return; // already resolved
@@ -479,8 +488,7 @@ export class RealtimeTradingviewChartComponent
 
     // No seed data — fall back to old behavior (last candle + 2)
     if (!this.seededFromChartData || this.seededHistoryEndTime === null) {
-      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
-      if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+      this.tryArmSignalStopFallback(tfSec);
       return;
     }
 
@@ -490,8 +498,7 @@ export class RealtimeTradingviewChartComponent
 
     // No levels to scan against — fall back to old behavior
     if (entry === null || (target === null && stop === null)) {
-      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
-      if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+      this.tryArmSignalStopFallback(tfSec);
       return;
     }
 
@@ -519,13 +526,38 @@ export class RealtimeTradingviewChartComponent
     }
 
     // Safety fallback: we have recent data but crossing not found (manual close, bid/ask spread, etc.)
-    if (this.candles.length) {
-      const lastTime = this.candles[this.candles.length - 1].time;
-      const now = Math.floor(Date.now() / 1000);
-      if (lastTime >= now - 5 * tfSec) {
-        this.signalCrossingTime = lastTime;
-        this.signalStopAfterTime = lastTime + 2 * tfSec;
-      }
+    this.tryArmSignalStopFallback(tfSec);
+  }
+
+  private tryArmSignalStopFallback(tfSec: number): void {
+    if (!this.candles.length) {
+      return;
+    }
+
+    const lastTime = this.candles[this.candles.length - 1].time;
+
+    // Settled charts that are already inactive will not receive post-seed
+    // candles, so use the last visible candle as the terminal point.
+    if (!this.active && this.signalCompleted) {
+      this.signalCrossingTime = lastTime;
+      this.signalStopAfterTime = lastTime;
+      return;
+    }
+
+    // Do not freeze a seeded settled chart at "last seed candle + 2 bars"
+    // before realtime has actually moved beyond the seed boundary.
+    if (
+      this.seededFromChartData &&
+      this.seededHistoryEndTime !== null &&
+      lastTime <= this.seededHistoryEndTime
+    ) {
+      return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (lastTime >= now - 5 * tfSec) {
+      this.signalCrossingTime = lastTime;
+      this.signalStopAfterTime = lastTime + 2 * tfSec;
     }
   }
 
