@@ -62,10 +62,12 @@ export function normalizeTfTimestamp(rawTime: number, timeframeSeconds: number, 
 }
 
 export function normalizeCandles(rawCandles: any[] | null, timeOffsetSeconds = 0): Candle[] {
-  return (Array.isArray(rawCandles) ? rawCandles : [])
+  const normalized = (Array.isArray(rawCandles) ? rawCandles : [])
     .map((c) => normalizeCandle(c, timeOffsetSeconds))
-    .filter((c: Candle | null): c is Candle => !!c)
-    .sort((a, b) => a.time - b.time);
+    .filter((c: Candle | null): c is Candle => !!c);
+  const byTime = new Map<number, Candle>();
+  for (const c of normalized) byTime.set(c.time, c);
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
 }
 
 // ── Candle merge / update ──────────────────────────────────────────────────

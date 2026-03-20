@@ -273,12 +273,69 @@ export class AppComponent implements OnInit {
       return null;
     }
 
-    const candidate = Array.isArray(rawChartData) ? rawChartData[0] : rawChartData;
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    if (Array.isArray(rawChartData)) {
+      if (!rawChartData.length) {
+        return null;
+      }
+
+      const first = rawChartData[0];
+      if (this.looksLikeChartContainer(first)) {
+        return this.normalizeChartData(first);
+      }
+
+      if (this.looksLikeCandle(first)) {
+        return { candles: rawChartData };
+      }
+
       return null;
     }
 
-    return candidate as Record<string, any>;
+    if (typeof rawChartData !== "object") {
+      return null;
+    }
+
+    const normalized = { ...(rawChartData as Record<string, any>) };
+    if (!normalized["candles"] && Array.isArray(normalized["bars"])) {
+      normalized["candles"] = normalized["bars"];
+    }
+
+    return normalized;
+  }
+
+  private looksLikeChartContainer(value: unknown): value is Record<string, any> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, any>;
+    return !!(
+      record["symbol"] ||
+      record["period"] ||
+      record["timeframe"] ||
+      record["candles"] ||
+      record["bars"] ||
+      record["objects"] ||
+      record["trendLines"]
+    );
+  }
+
+  private looksLikeCandle(value: unknown): value is Record<string, any> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, any>;
+    const hasTime = record["time"] !== undefined || record["Time"] !== undefined;
+    const hasOpen =
+      record["open"] !== undefined || record["Open"] !== undefined || record["O"] !== undefined;
+    const hasHigh =
+      record["high"] !== undefined || record["High"] !== undefined || record["H"] !== undefined;
+    const hasLow =
+      record["low"] !== undefined || record["Low"] !== undefined || record["L"] !== undefined;
+    const hasClose =
+      record["close"] !== undefined || record["Close"] !== undefined || record["C"] !== undefined;
+
+    return hasTime && hasOpen && hasHigh && hasLow && hasClose;
   }
 
   private normalizeChartMode(value: unknown): ChartMode | null {

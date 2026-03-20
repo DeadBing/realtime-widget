@@ -499,7 +499,7 @@ export class RealtimeTradingviewChartComponent
 
     // Scan candles from seed end forward for level crossing
     for (const c of this.candles) {
-      if (c.time < this.seededHistoryEndTime) continue;
+      if (c.time <= this.seededHistoryEndTime) continue;
 
       let hit = false;
       if (target !== null) {
@@ -820,24 +820,40 @@ export class RealtimeTradingviewChartComponent
   }
 
   private buildBaselineData(startX: number, endX: number, val: number, tfSec: number): Array<{ time: UTCTimestamp; value: number }> {
+    if (endX <= startX) return [{ time: Math.round(startX) as UTCTimestamp, value: val }];
+
     const points: Array<{ time: UTCTimestamp; value: number }> = [];
-    points.push({ time: Math.round(startX) as UTCTimestamp, value: val });
+    const startRounded = Math.round(startX);
+    points.push({ time: startRounded as UTCTimestamp, value: val });
+    let lastTime = startRounded;
+
     // Use real candle times for intermediate points
     for (const c of this.candles) {
-      if (c.time > startX && c.time < endX) {
+      if (c.time > startX && c.time < endX && c.time !== lastTime) {
         points.push({ time: c.time as UTCTimestamp, value: val });
+        lastTime = c.time;
       }
     }
+
     // Extend beyond last candle if needed
     const lastCandleTime = this.candles.length ? this.candles[this.candles.length - 1].time : startX;
     if (endX > lastCandleTime) {
       let t = lastCandleTime + tfSec;
       while (t < endX) {
-        if (t > startX) points.push({ time: Math.round(t) as UTCTimestamp, value: val });
+        const rounded = Math.round(t);
+        if (t > startX && rounded !== lastTime) {
+          points.push({ time: rounded as UTCTimestamp, value: val });
+          lastTime = rounded;
+        }
         t += tfSec;
       }
     }
-    points.push({ time: Math.round(endX) as UTCTimestamp, value: val });
+
+    const endRounded = Math.round(endX);
+    if (endRounded !== lastTime) {
+      points.push({ time: endRounded as UTCTimestamp, value: val });
+    }
+
     return points;
   }
 

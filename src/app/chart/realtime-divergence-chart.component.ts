@@ -66,6 +66,9 @@ type TrendLine = {
   p1: { barIdx: number; value: number };
   p2: { barIdx: number; value: number };
   slopePerBar: number;
+  intercept: number;
+  endBarIdx?: number;
+  endValue?: number;
 };
 
 @Component({
@@ -317,7 +320,7 @@ export class RealtimeDivergenceChartComponent
 
     // Scan candles from seed end forward for level crossing
     for (const c of this.candles) {
-      if (c.time < this.seededHistoryEndTime) continue;
+      if (c.time <= this.seededHistoryEndTime) continue;
 
       let hit = false;
       if (target !== null) {
@@ -830,7 +833,42 @@ export class RealtimeDivergenceChartComponent
 
   private normalizeTrendLines(): TrendLine[] {
     const source = Array.isArray(this.trendLines) && this.trendLines.length ? this.trendLines : Array.isArray(this.objects) ? this.objects : [];
-    return source.map((l, i) => this.normalizeTrendLine(l, i)).filter((l: TrendLine | null): l is TrendLine => !!l);
+    const normalized = source
+      .map((l, i) => this.normalizeTrendLine(l, i))
+      .filter((l: TrendLine | null): l is TrendLine => !!l);
+
+    // Keep ray-right lines bounded by the first same-pane intersection, like pattern mode.
+    for (const line of normalized) {
+      if (!line.rayRight || line.style === "dot") continue;
+
+      let earliestBarIdx = Infinity;
+      let endValue: number | undefined;
+
+      for (const candidate of normalized) {
+        if (line === candidate || !candidate.rayRight || candidate.style === "dot") continue;
+        if (line.paneIndex !== candidate.paneIndex) continue;
+        if (Math.abs(line.slopePerBar - candidate.slopePerBar) < 1e-12) continue;
+
+        const intersectionBarIdx =
+          (candidate.intercept - line.intercept) /
+          (line.slopePerBar - candidate.slopePerBar);
+        if (
+          intersectionBarIdx >
+            Math.max(line.p1.barIdx, candidate.p1.barIdx) &&
+          intersectionBarIdx < earliestBarIdx
+        ) {
+          earliestBarIdx = intersectionBarIdx;
+          endValue = line.slopePerBar * intersectionBarIdx + line.intercept;
+        }
+      }
+
+      if (earliestBarIdx !== Infinity && endValue !== undefined) {
+        line.endBarIdx = earliestBarIdx;
+        line.endValue = endValue;
+      }
+    }
+
+    return normalized;
   }
 
   private normalizeTrendLine(rawLine: any, lineIndex: number): TrendLine | null {
@@ -853,6 +891,7 @@ export class RealtimeDivergenceChartComponent
     const p2 = points[points.length - 1];
     if (p1.barIdx === p2.barIdx) return null;
     const slopePerBar = (p2.value - p1.value) / (p2.barIdx - p1.barIdx);
+    const intercept = p1.value - slopePerBar * p1.barIdx;
     return {
       color: String(rawLine?.color ?? "#42D433"),
       width: Math.min(Math.max(Number(rawLine?.width ?? 2), 1), 4) as 1 | 2 | 3 | 4,
@@ -860,6 +899,7 @@ export class RealtimeDivergenceChartComponent
       rayRight: !!rawLine?.ray_right,
       paneIndex: this.resolveTrendLinePaneIndex(rawLine, points, lineIndex),
       p1, p2, slopePerBar,
+      intercept,
     };
   }
 
@@ -877,7 +917,7 @@ export class RealtimeDivergenceChartComponent
   }
 
   private findNearestBarIndex(rawTime: number, tfSec: number): number {
-    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
+    const candles = this.getTrendLineCandles();
     if (!candles.length) return -1;
     let nearestIdx = 0;
     let nearestDist = Math.abs(candles[0].time - rawTime);
@@ -889,7 +929,7 @@ export class RealtimeDivergenceChartComponent
   }
 
   private looksPriceLike(points: Array<{ value: number }>): boolean {
-    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
+    const candles = this.getTrendLineCandles();
     if (!candles.length) return false;
     let minP = Infinity, maxP = -Infinity;
     for (const c of candles) { minP = Math.min(minP, c.low); maxP = Math.max(maxP, c.high); }
@@ -905,11 +945,18 @@ export class RealtimeDivergenceChartComponent
   // ── Data builders ──────────────────────────────────────────────────────
 
   private buildTrendLineData(line: TrendLine): Array<{ time: UTCTimestamp; value: number }> {
-    const candles = this.articleSeedCandles.length ? this.articleSeedCandles : this.candles;
+    const candles = this.getTrendLineCandles();
     const n = candles.length;
     if (!n) return [];
     const data: Array<{ time: UTCTimestamp; value: number }> = [];
-    const lastBar = line.rayRight ? line.p2.barIdx + 15 : line.p2.barIdx;
+    let lastBar: number;
+    if (!line.rayRight) {
+      lastBar = line.p2.barIdx;
+    } else if (line.endBarIdx !== undefined) {
+      lastBar = Math.floor(line.endBarIdx);
+    } else {
+      lastBar = line.p2.barIdx + 15;
+    }
 
     for (let i = line.p1.barIdx; i <= lastBar; i++) {
       const value = line.p1.value + line.slopePerBar * (i - line.p1.barIdx);
@@ -924,24 +971,43 @@ export class RealtimeDivergenceChartComponent
     return data;
   }
 
+  private getTrendLineCandles(): Candle[] {
+    return this.candles.length ? this.candles : this.articleSeedCandles;
+  }
+
   private buildBaselineData(startTime: number, endTime: number, value: number, tfSec: number): Array<{ time: UTCTimestamp; value: number }> {
+    if (endTime <= startTime) return [{ time: toUtc(startTime), value }];
+
     const points: Array<{ time: UTCTimestamp; value: number }> = [{ time: toUtc(startTime), value }];
+    let lastTime = Number(toUtc(startTime));
+
     // Use real candle times for intermediate points
     for (const c of this.candles) {
-      if (c.time > startTime && c.time < endTime) {
+      if (c.time > startTime && c.time < endTime && c.time !== lastTime) {
         points.push({ time: c.time as UTCTimestamp, value });
+        lastTime = c.time;
       }
     }
+
     // Extend beyond last candle if needed
     const lastCandleTime = this.candles.length ? this.candles[this.candles.length - 1].time : startTime;
     if (endTime > lastCandleTime) {
       let t = lastCandleTime + tfSec;
       while (t < endTime) {
-        if (t > startTime) points.push({ time: Math.round(t) as UTCTimestamp, value });
+        const rounded = Math.round(t);
+        if (t > startTime && rounded !== lastTime) {
+          points.push({ time: rounded as UTCTimestamp, value });
+          lastTime = rounded;
+        }
         t += tfSec;
       }
     }
-    points.push({ time: toUtc(endTime), value });
+
+    const endUtc = Number(toUtc(endTime));
+    if (endUtc !== lastTime) {
+      points.push({ time: endUtc as UTCTimestamp, value });
+    }
+
     return points;
   }
 
