@@ -300,8 +300,7 @@ export class RealtimeDivergenceChartComponent
 
     // No seed data — fall back to old behavior (last candle + 2)
     if (!this.seededFromChartData || this.seededHistoryEndTime === null) {
-      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
-      if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+      this.tryArmSignalStopFallback(tfSec);
       return;
     }
 
@@ -311,8 +310,7 @@ export class RealtimeDivergenceChartComponent
 
     // No levels to scan against — fall back to old behavior
     if (entry === null || (target === null && stop === null)) {
-      const lastTime = this.candles.length ? this.candles[this.candles.length - 1].time : null;
-      if (lastTime !== null) this.signalStopAfterTime = lastTime + 2 * tfSec;
+      this.tryArmSignalStopFallback(tfSec);
       return;
     }
 
@@ -340,13 +338,32 @@ export class RealtimeDivergenceChartComponent
     }
 
     // Safety fallback: we have recent data but crossing not found (manual close, bid/ask spread, etc.)
-    if (this.candles.length) {
-      const lastTime = this.candles[this.candles.length - 1].time;
-      const now = Math.floor(Date.now() / 1000);
-      if (lastTime >= now - 5 * tfSec) {
-        this.signalCrossingTime = lastTime;
-        this.signalStopAfterTime = lastTime + 2 * tfSec;
-      }
+    this.tryArmSignalStopFallback(tfSec);
+  }
+
+  private tryArmSignalStopFallback(tfSec: number): void {
+    if (!this.candles.length) {
+      return;
+    }
+
+    const lastTime = this.candles[this.candles.length - 1].time;
+
+    // When chartData is seeded from the article, do not freeze the chart at
+    // "last seed candle + 2 bars" before realtime candles have actually moved
+    // past the seed boundary. Otherwise completed divergence articles stop
+    // accepting live candles and end up truncated in an article-specific way.
+    if (
+      this.seededFromChartData &&
+      this.seededHistoryEndTime !== null &&
+      lastTime <= this.seededHistoryEndTime
+    ) {
+      return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (lastTime >= now - 5 * tfSec) {
+      this.signalCrossingTime = lastTime;
+      this.signalStopAfterTime = lastTime + 2 * tfSec;
     }
   }
 
@@ -872,8 +889,13 @@ export class RealtimeDivergenceChartComponent
   }
 
   private normalizeTrendLine(rawLine: any, lineIndex: number): TrendLine | null {
-    if (rawLine?.type !== "trendline") return null;
-    const rawPoints = Array.isArray(rawLine?.points) ? rawLine.points : [];
+    const rawType = `${rawLine?.type ?? rawLine?.Type ?? ""}`.trim().toLowerCase();
+    if (rawType !== "trendline") return null;
+    const rawPoints = Array.isArray(rawLine?.points)
+      ? rawLine.points
+      : Array.isArray(rawLine?.Points)
+        ? rawLine.Points
+        : [];
     if (rawPoints.length < 2) return null;
     const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe) || "M5");
     const points = rawPoints
@@ -896,7 +918,7 @@ export class RealtimeDivergenceChartComponent
       color: String(rawLine?.color ?? "#42D433"),
       width: Math.min(Math.max(Number(rawLine?.width ?? 2), 1), 4) as 1 | 2 | 3 | 4,
       style: String(rawLine?.style ?? "solid").toLowerCase() === "dot" ? "dot" : "solid",
-      rayRight: !!rawLine?.ray_right,
+      rayRight: Boolean(rawLine?.ray_right ?? rawLine?.rayRight),
       paneIndex: this.resolveTrendLinePaneIndex(rawLine, points, lineIndex),
       p1, p2, slopePerBar,
       intercept,
@@ -955,7 +977,11 @@ export class RealtimeDivergenceChartComponent
     } else if (line.endBarIdx !== undefined) {
       lastBar = Math.floor(line.endBarIdx);
     } else {
-      lastBar = line.p2.barIdx + 15;
+      // Divergence payload often contains only one ray-right line per pane,
+      // so there may be no intersection to stop on. In that case keep the
+      // line alive through the visible candle history instead of truncating it
+      // to a fixed +15 bars from the second point.
+      lastBar = Math.max(line.p2.barIdx + 15, n - 1);
     }
 
     for (let i = line.p1.barIdx; i <= lastBar; i++) {
