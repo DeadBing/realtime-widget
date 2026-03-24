@@ -26,6 +26,7 @@ import {
   createChart,
 } from "lightweight-charts";
 import { QuotesHubConnectionService } from "./quotes-hub-connection.service";
+import { type ChartTheme, getPalette } from "./chart-theme";
 import {
   type Candle,
   toUtc,
@@ -54,6 +55,7 @@ import {
 export class RealtimeTradingviewChartComponent
   implements AfterViewInit, OnChanges, OnDestroy
 {
+  @Input() theme: ChartTheme = "light";
   @Input() symbol = "";
   @Input() timeframe = "M15";
   @Input() source = "ohlc";
@@ -124,6 +126,13 @@ export class RealtimeTradingviewChartComponent
 
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.viewInitialized || !this.isBrowser) return;
+    if (changes["theme"] && this.chartRef) {
+      const pal = getPalette(this.theme);
+      this.chartRef.applyOptions({
+        layout: { background: { type: ColorType.Solid, color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+      });
+    }
     if (changes["height"] && this.chartRef) this.chartRef.applyOptions({ height: this.height });
     if (changes["initialCandles"]) this.seedInitialCandles();
     if (changes["objects"]) this.renderTrendlines();
@@ -346,15 +355,16 @@ export class RealtimeTradingviewChartComponent
   private createChart(): void {
     if (!this.chartContainerRef?.nativeElement) return;
 
+    const pal = getPalette(this.theme);
     const chart = createChart(this.chartContainerRef.nativeElement, {
       autoSize: true,
       height: this.height,
       rightPriceScale: { visible: true, borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.06 } },
       leftPriceScale: { visible: false },
-      layout: { background: { type: ColorType.Solid, color: "#ffffff" }, textColor: "#374151" },
+      layout: { background: { type: ColorType.Solid, color: pal.background }, textColor: pal.text },
       grid: {
-        vertLines: { visible: true, color: "rgba(0, 0, 0, 0.08)" },
-        horzLines: { visible: true, color: "rgba(0, 0, 0, 0.08)" },
+        vertLines: { visible: true, color: pal.grid },
+        horzLines: { visible: true, color: pal.grid },
       },
       timeScale: { rightBarStaysOnScroll: true, barSpacing: 14, rightOffset: 5, timeVisible: true, secondsVisible: false },
     });

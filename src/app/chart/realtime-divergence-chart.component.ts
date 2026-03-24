@@ -33,6 +33,7 @@ import {
   calculateStochasticSeries,
 } from "./divergence-indicators";
 import { QuotesHubConnectionService } from "./quotes-hub-connection.service";
+import { type ChartTheme, getPalette } from "./chart-theme";
 import {
   type Candle,
   toUtc,
@@ -81,6 +82,7 @@ type TrendLine = {
 export class RealtimeDivergenceChartComponent
   implements AfterViewInit, OnChanges, OnDestroy
 {
+  @Input() theme: ChartTheme = "light";
   @Input() symbol = "";
   @Input() timeframe = "M15";
   @Input() source = "ohlc";
@@ -150,19 +152,9 @@ export class RealtimeDivergenceChartComponent
   private lastEmittedPrice: number | null = null;
   private readonly defaultRightOffsetBars = 3;
   private readonly realtimeFollowThresholdBars = 1.5;
-  private readonly tradingViewPalette = {
-    background: "#ffffff",
-    text: "#374151",
-    grid: "rgba(0, 0, 0, 0.08)",
-    crosshair: "rgba(55, 65, 81, 0.25)",
-    up: "#26a69a",
-    down: "#ef5350",
-    blue: "#2962ff",
-    orange: "#ff6d00",
-    macdMain: "#7f8c8d",
-    macdPositive: "rgba(38, 166, 154, 0.85)",
-    macdNegative: "rgba(239, 83, 80, 0.85)",
-  } as const;
+  private get tradingViewPalette() {
+    return getPalette(this.theme);
+  }
   private followRealtime = true;
   private suppressVisibleRangeTracking = false;
 
@@ -182,6 +174,13 @@ export class RealtimeDivergenceChartComponent
 
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.viewInitialized || !this.isBrowser) return;
+    if (changes["theme"] && this.chartRef) {
+      const pal = this.tradingViewPalette;
+      this.chartRef.applyOptions({
+        layout: { background: { type: ColorType.Solid, color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+      });
+    }
     if (changes["height"] && this.chartRef) this.chartRef.applyOptions({ height: this.height });
     if (changes["initialCandles"]) this.seedInitialCandles();
     if (changes["trendLines"] || changes["objects"] || changes["timeframe"]) this.renderTrendlines();

@@ -3,6 +3,7 @@ import { isPlatformBrowser } from "@angular/common";
 import { RealtimeDivergenceChartComponent } from "./chart/realtime-divergence-chart.component";
 import { RealtimeTradingviewChartComponent } from "./chart/realtime-tradingview-chart.component";
 import { WidgetConfigService } from "./chart/widget-config.service";
+import { ChartTheme } from "./chart/chart-theme";
 
 type ChartMode = "pattern" | "divergence";
 
@@ -16,6 +17,7 @@ type ChartMode = "pattern" | "divergence";
   template: `
     @if (resolvedChartMode === "divergence") {
       <app-realtime-divergence-chart
+        [theme]="theme"
         [symbol]="symbol"
         [timeframe]="timeframe"
         [source]="source"
@@ -32,6 +34,7 @@ type ChartMode = "pattern" | "divergence";
       ></app-realtime-divergence-chart>
     } @else {
       <app-realtime-tradingview-chart
+        [theme]="theme"
         [symbol]="symbol"
         [timeframe]="timeframe"
         [source]="source"
@@ -53,7 +56,7 @@ type ChartMode = "pattern" | "divergence";
         display: block;
         width: 100%;
         max-width: 1280px;
-        height: 800px;
+        height: 100%;
         margin: 0;
         padding: 0;
         overflow: hidden;
@@ -62,6 +65,7 @@ type ChartMode = "pattern" | "divergence";
   ],
 })
 export class AppComponent implements OnInit {
+  theme: ChartTheme = "light";
   symbol = "";
   timeframe = "M15";
   source = "ohlc";
@@ -110,6 +114,7 @@ export class AppComponent implements OnInit {
     const params = new URLSearchParams(window.location.search);
 
     this.widgetConfig.hubUrl = params.get("hubUrl") || "";
+    this.theme = params.get("theme") === "dark" ? "dark" : "light";
     this.symbol = params.get("symbol") || "";
     this.timeframe = params.get("timeframe") || "M15";
     this.source = params.get("source") || "ohlc";
@@ -168,6 +173,9 @@ export class AppComponent implements OnInit {
 
       if (data.hubUrl) {
         this.widgetConfig.hubUrl = data.hubUrl;
+      }
+      if (data.theme !== undefined) {
+        this.theme = data.theme === "dark" ? "dark" : "light";
       }
       if (data.symbol !== undefined) {
         this.symbol = data.symbol;
