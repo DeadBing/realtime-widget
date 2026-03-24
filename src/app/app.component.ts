@@ -22,6 +22,7 @@ type ChartMode = "pattern" | "divergence";
         [timeframe]="timeframe"
         [source]="source"
         [active]="active"
+        [previewOnly]="previewOnly"
         [height]="height"
         [initialCandles]="initialCandles"
         [trendLines]="trendLines"
@@ -39,6 +40,7 @@ type ChartMode = "pattern" | "divergence";
         [timeframe]="timeframe"
         [source]="source"
         [active]="active"
+        [previewOnly]="previewOnly"
         [height]="height"
         [initialCandles]="initialCandles"
         [objects]="objects"
@@ -70,6 +72,7 @@ export class AppComponent implements OnInit {
   timeframe = "M15";
   source = "ohlc";
   active = true;
+  previewOnly = false;
   height = 800;
   initialCandles: any[] | null = null;
   objects: any[] | null = null;
@@ -119,6 +122,7 @@ export class AppComponent implements OnInit {
     this.timeframe = params.get("timeframe") || "M15";
     this.source = params.get("source") || "ohlc";
     this.active = params.get("active") !== "false";
+    this.previewOnly = params.get("previewOnly") === "true";
     this.height = Number(params.get("height")) || 500;
     this.chartMode = this.normalizeChartMode(params.get("chartMode"));
     this.takeProfit = params.get("takeProfit") || null;
@@ -188,6 +192,9 @@ export class AppComponent implements OnInit {
       }
       if (data.active !== undefined) {
         this.active = data.active;
+      }
+      if (data.previewOnly !== undefined) {
+        this.previewOnly = !!data.previewOnly;
       }
       if (data.height !== undefined) {
         this.height = data.height;

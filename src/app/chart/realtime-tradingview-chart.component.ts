@@ -60,6 +60,7 @@ export class RealtimeTradingviewChartComponent
   @Input() timeframe = "M15";
   @Input() source = "ohlc";
   @Input() active = false;
+  @Input() previewOnly = false;
   @Input() height = 800;
   @Input() initialCandles: any[] | null = null;
   @Input() objects: any[] | null = null;
@@ -143,7 +144,7 @@ export class RealtimeTradingviewChartComponent
       this.renderTradeLevels();
       void this.syncRealtime();
     }
-    if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"]) void this.syncRealtime();
+    if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"] || changes["previewOnly"]) void this.syncRealtime();
   }
 
   ngOnDestroy(): void {
@@ -160,6 +161,16 @@ export class RealtimeTradingviewChartComponent
     const sym = normalizeSymbol(this.symbol);
     const tf = normalizeDisplayTimeframe(this.timeframe);
     const src = normalizeSource(this.source);
+
+    if (this.previewOnly) {
+      await this.teardownRealtime();
+      if (token !== this.syncToken) return;
+      this.loading = false;
+      this.connected = false;
+      this.error = null;
+      this.renderCandles();
+      return;
+    }
 
     if (!this.shouldRunRealtime() || !sym || !tf || !src) {
       await this.teardownRealtime();
@@ -448,9 +459,13 @@ export class RealtimeTradingviewChartComponent
   // ── Seed / filter ──────────────────────────────────────────────────────
 
   private seedInitialCandles(): void {
-    if (!this.initialCandles?.length || !this.candlesRef || !this.chartRef) return;
+    if (!this.candlesRef || !this.chartRef) return;
     const seeded = normalizeCandles(this.initialCandles);
-    if (!seeded.length) return;
+    if (!seeded.length) {
+      this.seededFromChartData = false;
+      this.seededHistoryEndTime = null;
+      return;
+    }
     const seedEndTime = seeded[seeded.length - 1].time;
     // Preserve candles past seed end that arrived from snapshots before seed data was set
     const postSeedCandles = this.candles.filter((c) => c.time > seedEndTime);
@@ -487,6 +502,10 @@ export class RealtimeTradingviewChartComponent
   }
 
   private shouldRunRealtime(): boolean {
+    if (this.previewOnly) {
+      return false;
+    }
+
     return this.active || (this.signalCompleted && this.signalStopAfterTime === null);
   }
 

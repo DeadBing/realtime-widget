@@ -87,6 +87,7 @@ export class RealtimeDivergenceChartComponent
   @Input() timeframe = "M15";
   @Input() source = "ohlc";
   @Input() active = false;
+  @Input() previewOnly = false;
   @Input() height = 800;
   @Input() initialCandles: any[] | null = null;
   @Input() trendLines: any[] | null = null;
@@ -194,7 +195,7 @@ export class RealtimeDivergenceChartComponent
       this.renderMarketDataFull();
       this.renderTrendlines();
     }
-    if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"] || changes["hubTimeOffsetHours"]) void this.syncRealtime();
+    if (changes["symbol"] || changes["timeframe"] || changes["source"] || changes["active"] || changes["previewOnly"] || changes["hubTimeOffsetHours"]) void this.syncRealtime();
   }
 
   ngOnDestroy(): void {
@@ -297,6 +298,10 @@ export class RealtimeDivergenceChartComponent
   }
 
   private shouldRunRealtime(): boolean {
+    if (this.previewOnly) {
+      return false;
+    }
+
     return this.active || (this.signalCompleted && this.signalStopAfterTime === null);
   }
 
