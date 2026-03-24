@@ -776,7 +776,12 @@ export class RealtimeTradingviewChartComponent
       return { startX, endX: this.signalCrossingTime };
     }
 
-    let endX = startX + tfSec * 15;
+    // For active (online) signals — extend rectangles to the right edge and beyond
+    const lastCandleTime = this.candles.length ? this.candles[this.candles.length - 1].time : startX;
+    const visibleRange = this.chartRef?.timeScale().getVisibleRange();
+    const visibleEnd = visibleRange ? Number(visibleRange.to) : 0;
+    let endX = Math.max(lastCandleTime + tfSec * 30, visibleEnd + tfSec * 5);
+
     const objects = Array.isArray(this.objects) ? this.objects : [];
     for (const object of objects) {
       if (object?.type !== "trendline" || String(object?.style ?? "").toLowerCase() !== "dot") continue;
