@@ -626,7 +626,7 @@ export class RealtimeDivergenceChartComponent
       // Fallback to full setData if update fails (e.g. time ordering issue)
       this.priceSeries.setData(this.candles.map((c) => ({ time: toUtc(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
     }
-    if (this.active && this.followRealtime) {
+    if (this.active && this.followRealtime && !this.previewOnly) {
       requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
     }
     this.emitCurrentPrice();
@@ -636,7 +636,7 @@ export class RealtimeDivergenceChartComponent
     if (!this.autoFitApplied) {
       this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().fitContent());
       this.autoFitApplied = true;
-    } else if (this.active && this.followRealtime) {
+    } else if (this.active && this.followRealtime && !this.previewOnly) {
       requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
     }
   }
@@ -996,13 +996,13 @@ export class RealtimeDivergenceChartComponent
     if (!line.rayRight) {
       lastBar = line.p2.barIdx;
     } else if (line.endBarIdx !== undefined) {
-      lastBar = Math.floor(line.endBarIdx);
+      lastBar = this.previewOnly ? Math.min(Math.floor(line.endBarIdx), n - 1) : Math.floor(line.endBarIdx);
     } else {
       // Divergence payload often contains only one ray-right line per pane,
       // so there may be no intersection to stop on. In that case keep the
       // line alive through the visible candle history instead of truncating it
       // to a fixed +15 bars from the second point.
-      lastBar = Math.max(line.p2.barIdx + 15, n - 1);
+      lastBar = this.previewOnly ? Math.max(line.p2.barIdx, n - 1) : Math.max(line.p2.barIdx + 15, n - 1);
     }
 
     for (let i = line.p1.barIdx; i <= lastBar; i++) {
@@ -1060,6 +1060,7 @@ export class RealtimeDivergenceChartComponent
 
   private getTradeLevelsEndTime(tfSec: number): number {
     if (this.signalCompleted && this.signalCrossingTime !== null) return this.signalCrossingTime;
+    if (this.previewOnly) return this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000);
     return (this.candles[this.candles.length - 1]?.time ?? Math.floor(Date.now() / 1000)) + tfSec * 15;
   }
 

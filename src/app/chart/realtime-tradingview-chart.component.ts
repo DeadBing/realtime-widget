@@ -432,7 +432,9 @@ export class RealtimeTradingviewChartComponent
     if (!data.length || this.autoFitApplied) return;
     this.chartRef.timeScale().fitContent();
     this.autoFitApplied = true;
-    requestAnimationFrame(() => this.chartRef?.timeScale().scrollToRealTime());
+    if (!this.previewOnly) {
+      requestAnimationFrame(() => this.chartRef?.timeScale().scrollToRealTime());
+    }
   }
 
   private renderLastCandle(): void {
@@ -475,6 +477,7 @@ export class RealtimeTradingviewChartComponent
     this.signalStopAfterTime = null; // force recalculation for new candle set
     this.signalCrossingTime = null;
     this.signalCompleted = false;
+    this.autoFitApplied = false;
     this.onSignalStatusChange();
     this.renderCandles();
   }
@@ -807,6 +810,9 @@ export class RealtimeTradingviewChartComponent
 
     // For active (online) signals — extend rectangles to the right edge and beyond
     const lastCandleTime = this.candles.length ? this.candles[this.candles.length - 1].time : startX;
+    if (this.previewOnly) {
+      return { startX, endX: lastCandleTime };
+    }
     const visibleRange = this.chartRef?.timeScale().getVisibleRange();
     const visibleEnd = visibleRange ? Number(visibleRange.to) : 0;
     let endX = Math.max(lastCandleTime + tfSec * 30, visibleEnd + tfSec * 5);
@@ -865,9 +871,9 @@ export class RealtimeTradingviewChartComponent
     if (!line.rayRight) {
       lastIntBar = line.p2.barIdx;
     } else if (line.endBarIdx !== undefined) {
-      lastIntBar = Math.floor(line.endBarIdx);
+      lastIntBar = this.previewOnly ? Math.min(Math.floor(line.endBarIdx), n - 1) : Math.floor(line.endBarIdx);
     } else {
-      lastIntBar = line.p2.barIdx + 15;
+      lastIntBar = this.previewOnly ? Math.max(line.p2.barIdx, n - 1) : line.p2.barIdx + 15;
     }
 
     // Emit a point at every bar from p1 to lastIntBar
