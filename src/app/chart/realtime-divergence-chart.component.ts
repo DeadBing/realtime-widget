@@ -52,6 +52,8 @@ import {
   parsePrice,
   stringifyError,
   buildFocusedLogicalRange,
+  buildTrailingLogicalRange,
+  getLogicalRangeSpan,
 } from "./chart-utils";
 
 type AnySeries =
@@ -635,7 +637,9 @@ export class RealtimeDivergenceChartComponent
 
   private handleAutoFitAndScroll(): void {
     if (!this.autoFitApplied) {
-      const initialLogicalRange = this.previewOnly ? this.getInitialLogicalRange() : null;
+      const initialLogicalRange = this.previewOnly
+        ? this.getInitialLogicalRange()
+        : this.getLiveStartupLogicalRange();
       if (initialLogicalRange) {
         this.runWithSuppressedVisibleRangeTracking(() =>
           this.chartRef?.timeScale().setVisibleLogicalRange(initialLogicalRange),
@@ -1044,8 +1048,21 @@ export class RealtimeDivergenceChartComponent
       minVisibleBars: 28,
       maxVisibleBars: 46,
       leftPaddingBars: 6,
-      rightPaddingBars: this.previewOnly ? 1 : 3,
-      rightOffsetBars: this.previewOnly ? 0 : this.defaultRightOffsetBars,
+      rightPaddingBars: 1,
+      rightOffsetBars: 0,
+    });
+  }
+
+  private getLiveStartupLogicalRange(): LogicalRange | null {
+    const candles = this.getTrendLineCandles();
+    if (!candles.length) {
+      return null;
+    }
+
+    const focusedRange = this.getInitialLogicalRange();
+    const visibleBars = getLogicalRangeSpan(focusedRange) ?? 32;
+    return buildTrailingLogicalRange(candles.length, visibleBars, {
+      rightOffsetBars: this.defaultRightOffsetBars,
     });
   }
 

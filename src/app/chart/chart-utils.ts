@@ -302,6 +302,41 @@ export function buildFocusedLogicalRange(
   return { from: logicalFrom as Logical, to: logicalTo as Logical };
 }
 
+export function buildTrailingLogicalRange(
+  totalBars: number,
+  visibleBars: number,
+  options: {
+    rightOffsetBars?: number;
+  } = {},
+): LogicalRange | null {
+  const normalizedTotalBars = Math.max(0, Math.floor(totalBars));
+  if (!normalizedTotalBars) {
+    return null;
+  }
+
+  const desiredVisibleBars = Math.max(1, Math.floor(visibleBars));
+  const rightOffsetBars = Math.max(0, Math.floor(options.rightOffsetBars ?? 0));
+  const lastBarIndex = normalizedTotalBars - 1;
+  const logicalTo = Math.max(lastBarIndex + rightOffsetBars, desiredVisibleBars - 1);
+  const logicalFrom = Math.max(0, logicalTo - desiredVisibleBars + 1);
+
+  return { from: logicalFrom as Logical, to: logicalTo as Logical };
+}
+
+export function getLogicalRangeSpan(range: LogicalRange | null | undefined): number | null {
+  if (!range) {
+    return null;
+  }
+
+  const from = Number(range.from);
+  const to = Number(range.to);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    return null;
+  }
+
+  return Math.max(1, Math.floor(to - from + 1));
+}
+
 function clampLogicalBarIndex(value: number, lastBarIndex: number): number {
   const normalized = Math.floor(value);
   if (!Number.isFinite(normalized) || normalized <= 0) {

@@ -44,6 +44,8 @@ import {
   parsePrice,
   stringifyError,
   buildFocusedLogicalRange,
+  buildTrailingLogicalRange,
+  getLogicalRangeSpan,
 } from "./chart-utils";
 
 @Component({
@@ -431,7 +433,9 @@ export class RealtimeTradingviewChartComponent
     this.emitCurrentPrice();
 
     if (!data.length || this.autoFitApplied) return;
-    const initialLogicalRange = this.previewOnly ? this.getInitialLogicalRange() : null;
+    const initialLogicalRange = this.previewOnly
+      ? this.getInitialLogicalRange()
+      : this.getLiveStartupLogicalRange();
     if (initialLogicalRange) {
       this.chartRef.timeScale().setVisibleLogicalRange(initialLogicalRange);
     } else {
@@ -846,8 +850,20 @@ export class RealtimeTradingviewChartComponent
       minVisibleBars: 26,
       maxVisibleBars: 42,
       leftPaddingBars: 5,
-      rightPaddingBars: this.previewOnly ? 1 : 3,
-      rightOffsetBars: this.previewOnly ? 0 : 2,
+      rightPaddingBars: 1,
+      rightOffsetBars: 0,
+    });
+  }
+
+  private getLiveStartupLogicalRange() {
+    if (!this.candles.length) {
+      return null;
+    }
+
+    const focusedRange = this.getInitialLogicalRange();
+    const visibleBars = getLogicalRangeSpan(focusedRange) ?? 30;
+    return buildTrailingLogicalRange(this.candles.length, visibleBars, {
+      rightOffsetBars: 2,
     });
   }
 
