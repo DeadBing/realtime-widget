@@ -51,6 +51,7 @@ import {
   inferPrecision,
   parsePrice,
   stringifyError,
+  buildFocusedLogicalRange,
 } from "./chart-utils";
 
 type AnySeries =
@@ -634,8 +635,18 @@ export class RealtimeDivergenceChartComponent
 
   private handleAutoFitAndScroll(): void {
     if (!this.autoFitApplied) {
-      this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().fitContent());
+      const initialLogicalRange = this.previewOnly ? this.getInitialLogicalRange() : null;
+      if (initialLogicalRange) {
+        this.runWithSuppressedVisibleRangeTracking(() =>
+          this.chartRef?.timeScale().setVisibleLogicalRange(initialLogicalRange),
+        );
+      } else {
+        this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().fitContent());
+      }
       this.autoFitApplied = true;
+      if (this.active && this.followRealtime && !this.previewOnly) {
+        requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
+      }
     } else if (this.active && this.followRealtime && !this.previewOnly) {
       requestAnimationFrame(() => this.runWithSuppressedVisibleRangeTracking(() => this.chartRef?.timeScale().scrollToRealTime()));
     }
@@ -1020,6 +1031,43 @@ export class RealtimeDivergenceChartComponent
 
   private getTrendLineCandles(): Candle[] {
     return this.candles.length ? this.candles : this.articleSeedCandles;
+  }
+
+  private getInitialLogicalRange(): LogicalRange | null {
+    const candles = this.getTrendLineCandles();
+    if (!candles.length) {
+      return null;
+    }
+
+    return buildFocusedLogicalRange(candles.length, this.collectInitialFocusAnchorBars(), {
+      fallbackEndBar: candles.length - 1,
+      minVisibleBars: 28,
+      maxVisibleBars: 46,
+      leftPaddingBars: 6,
+      rightPaddingBars: this.previewOnly ? 1 : 3,
+      rightOffsetBars: this.previewOnly ? 0 : this.defaultRightOffsetBars,
+    });
+  }
+
+  private collectInitialFocusAnchorBars(): number[] {
+    const candles = this.getTrendLineCandles();
+    const anchorBars = [candles.length - 1];
+
+    for (const line of this.normalizeTrendLines()) {
+      anchorBars.push(line.p1.barIdx, line.p2.barIdx);
+      if (line.endBarIdx !== undefined && Number.isFinite(line.endBarIdx)) {
+        anchorBars.push(Math.ceil(line.endBarIdx));
+      }
+    }
+
+    if (this.signalCrossingTime !== null) {
+      const crossingBarIdx = this.findNearestBarIndex(this.signalCrossingTime, this.tfSeconds);
+      if (crossingBarIdx >= 0) {
+        anchorBars.push(crossingBarIdx);
+      }
+    }
+
+    return anchorBars;
   }
 
   private buildBaselineData(startTime: number, endTime: number, value: number, tfSec: number): Array<{ time: UTCTimestamp; value: number }> {

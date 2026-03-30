@@ -1,4 +1,4 @@
-import type { UTCTimestamp } from "lightweight-charts";
+import type { Logical, LogicalRange, UTCTimestamp } from "lightweight-charts";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -244,4 +244,69 @@ export function stringifyError(error: unknown): string {
 export function parsePrice(value: string | null): number | null {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+export function buildFocusedLogicalRange(
+  totalBars: number,
+  anchorBars: number[],
+  options: {
+    fallbackEndBar?: number;
+    minVisibleBars?: number;
+    maxVisibleBars?: number;
+    leftPaddingBars?: number;
+    rightPaddingBars?: number;
+    rightOffsetBars?: number;
+  } = {},
+): LogicalRange | null {
+  const normalizedTotalBars = Math.max(0, Math.floor(totalBars));
+  if (!normalizedTotalBars) {
+    return null;
+  }
+
+  const lastBarIndex = normalizedTotalBars - 1;
+  const minVisibleBars = Math.max(6, Math.floor(options.minVisibleBars ?? 28));
+  const maxVisibleBars = Math.max(minVisibleBars, Math.floor(options.maxVisibleBars ?? 48));
+  const leftPaddingBars = Math.max(0, Math.floor(options.leftPaddingBars ?? 4));
+  const rightPaddingBars = Math.max(0, Math.floor(options.rightPaddingBars ?? 2));
+  const rightOffsetBars = Math.max(0, Math.floor(options.rightOffsetBars ?? 0));
+  const fallbackEndBar = clampLogicalBarIndex(
+    options.fallbackEndBar ?? lastBarIndex,
+    lastBarIndex,
+  );
+
+  const normalizedAnchors = anchorBars
+    .filter((bar) => Number.isFinite(bar))
+    .map((bar) => clampLogicalBarIndex(bar, lastBarIndex))
+    .sort((left, right) => left - right);
+
+  const focusStartBar = normalizedAnchors.length
+    ? normalizedAnchors[0]
+    : Math.max(0, fallbackEndBar - minVisibleBars + 1);
+  const focusEndBar = normalizedAnchors.length
+    ? normalizedAnchors[normalizedAnchors.length - 1]
+    : fallbackEndBar;
+
+  const anchorSpan = Math.max(1, focusEndBar - focusStartBar + 1);
+  const paddedSpan = anchorSpan + leftPaddingBars + rightPaddingBars;
+  const desiredVisibleBars = Math.min(
+    Math.max(paddedSpan, minVisibleBars),
+    maxVisibleBars,
+  );
+
+  const logicalTo = Math.max(
+    focusEndBar + rightPaddingBars + rightOffsetBars,
+    desiredVisibleBars - 1,
+  );
+  const logicalFrom = Math.max(0, logicalTo - desiredVisibleBars + 1);
+
+  return { from: logicalFrom as Logical, to: logicalTo as Logical };
+}
+
+function clampLogicalBarIndex(value: number, lastBarIndex: number): number {
+  const normalized = Math.floor(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return 0;
+  }
+
+  return Math.min(normalized, lastBarIndex);
 }

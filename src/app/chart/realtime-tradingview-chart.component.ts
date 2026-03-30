@@ -43,6 +43,7 @@ import {
   normalizeSource,
   parsePrice,
   stringifyError,
+  buildFocusedLogicalRange,
 } from "./chart-utils";
 
 @Component({
@@ -430,7 +431,12 @@ export class RealtimeTradingviewChartComponent
     this.emitCurrentPrice();
 
     if (!data.length || this.autoFitApplied) return;
-    this.chartRef.timeScale().fitContent();
+    const initialLogicalRange = this.previewOnly ? this.getInitialLogicalRange() : null;
+    if (initialLogicalRange) {
+      this.chartRef.timeScale().setVisibleLogicalRange(initialLogicalRange);
+    } else {
+      this.chartRef.timeScale().fitContent();
+    }
     this.autoFitApplied = true;
     if (!this.previewOnly) {
       requestAnimationFrame(() => this.chartRef?.timeScale().scrollToRealTime());
@@ -827,6 +833,52 @@ export class RealtimeTradingviewChartComponent
       }
     }
     return { startX, endX };
+  }
+
+  private getInitialLogicalRange() {
+    if (!this.candles.length) {
+      return null;
+    }
+
+    const anchorBars = this.collectInitialFocusAnchorBars();
+    return buildFocusedLogicalRange(this.candles.length, anchorBars, {
+      fallbackEndBar: this.candles.length - 1,
+      minVisibleBars: 26,
+      maxVisibleBars: 42,
+      leftPaddingBars: 5,
+      rightPaddingBars: this.previewOnly ? 1 : 3,
+      rightOffsetBars: this.previewOnly ? 0 : 2,
+    });
+  }
+
+  private collectInitialFocusAnchorBars(): number[] {
+    const anchorBars = [this.candles.length - 1];
+    const objects = Array.isArray(this.objects) ? this.objects : [];
+    const tfSec = timeframeToSeconds(normalizeDisplayTimeframe(this.timeframe) || "M5");
+
+    for (const object of objects) {
+      if (object?.type !== "trendline") {
+        continue;
+      }
+
+      const rawPoints = Array.isArray(object?.points) ? object.points : [];
+      for (const point of rawPoints) {
+        const pointTime = Number(toUtc(Number(point?.time)));
+        const barIdx = this.findNearestBarIndex(pointTime, tfSec);
+        if (barIdx >= 0) {
+          anchorBars.push(barIdx);
+        }
+      }
+    }
+
+    if (this.signalCrossingTime !== null) {
+      const crossingBarIdx = this.findNearestBarIndex(this.signalCrossingTime, tfSec);
+      if (crossingBarIdx >= 0) {
+        anchorBars.push(crossingBarIdx);
+      }
+    }
+
+    return anchorBars;
   }
 
   // ── Bar-index helpers ──────────────────────────────────────────────────
