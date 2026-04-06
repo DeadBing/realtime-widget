@@ -376,6 +376,7 @@ export class RealtimeTradingviewChartComponent
       rightPriceScale: { visible: true, borderVisible: false, scaleMargins: { top: 0.06, bottom: 0.06 } },
       leftPriceScale: { visible: false },
       layout: { background: { type: ColorType.Solid, color: pal.background }, textColor: pal.text },
+      localization: { locale: "en-US" },
       grid: {
         vertLines: { visible: true, color: pal.grid },
         horzLines: { visible: true, color: pal.grid },

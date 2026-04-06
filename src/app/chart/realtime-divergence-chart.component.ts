@@ -219,7 +219,7 @@ export class RealtimeDivergenceChartComponent
       height: this.height,
       layout: { background: { type: ColorType.Solid, color: pal.background }, textColor: pal.text },
       localization: {
-        locale: "ru-RU",
+        locale: "en-US",
         dateFormat: "dd.MM.yyyy",
         timeFormatter: (time: unknown) => this.formatHoverDate(time),
       },
