@@ -103,10 +103,11 @@ export class RealtimeTradingviewChartComponent
   private tradeLevelPriceLines: Array<{ series: ISeriesApi<"Candlestick">; line: any }> = [];
   private tradeLevelsEndTime = 0;
   private tfSnapshotRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private seededHistoryStartTime: number | null = null;
   private seededHistoryEndTime: number | null = null;
   private lastProcessed1sTime: number | null = null;
   private removeReconnectedListener: (() => void) | null = null;
-  private readonly initialTfSnapshotCount = 100;
+  private readonly initialTfSnapshotCount = 200;
   private readonly refreshTfSnapshotCount = 5;
   private signalStopAfterTime: number | null = null;
   private signalCrossingTime: number | null = null;
@@ -168,10 +169,43 @@ export class RealtimeTradingviewChartComponent
     if (this.previewOnly) {
       await this.teardownRealtime();
       if (token !== this.syncToken) return;
-      this.loading = false;
-      this.connected = false;
+
+      // If no valid symbol/tf/source, just render what we have
+      if (!sym || !tf || !src) {
+        this.loading = false;
+        this.connected = false;
+        this.error = null;
+        this.renderCandles();
+        return;
+      }
+
+      this.loading = !this.seededFromChartData;
       this.error = null;
-      this.renderCandles();
+      this.currentSymbol = sym;
+      this.displayTimeframe = tf;
+      this.hubTf = toHubTimeframe(tf);
+      this.tfSeconds = timeframeToSeconds(tf);
+      this.currentKey = `${sym}|${tf}|${src}|preview`;
+
+      try {
+        const connection = await this.quotesHubConnectionService.ensureConnected();
+        if (token !== this.syncToken) return;
+
+        this.connection = connection;
+        this.candleEventHandler = (evt: any) => this.handleCandleEvent(evt);
+        connection.on("candle_event", this.candleEventHandler);
+
+        // Single snapshot request — no SubscribeCandles, no refresh timer
+        await this.requestTfSnapshot(connection, src, this.initialTfSnapshotCount);
+      } catch (error) {
+        console.warn("Preview snapshot fetch failed", error);
+      } finally {
+        if (token === this.syncToken) {
+          this.loading = false;
+          this.connected = false;
+          this.renderCandles();
+        }
+      }
       return;
     }
 
@@ -290,6 +324,14 @@ export class RealtimeTradingviewChartComponent
       if (!filtered.length) return;
       this.candles = this.candles.length ? mergeCandles(this.candles, filtered) : filtered;
       this.renderCandles();
+
+      // In preview mode, clean up after receiving the snapshot (no ongoing stream)
+      if (this.previewOnly && this.connection && this.candleEventHandler) {
+        this.connection.off("candle_event", this.candleEventHandler);
+        this.candleEventHandler = null;
+        this.connection = null;
+        this.currentKey = "";
+      }
       return;
     }
 
@@ -476,14 +518,17 @@ export class RealtimeTradingviewChartComponent
     const seeded = normalizeCandles(this.initialCandles);
     if (!seeded.length) {
       this.seededFromChartData = false;
+      this.seededHistoryStartTime = null;
       this.seededHistoryEndTime = null;
       return;
     }
+    const seedStartTime = seeded[0].time;
     const seedEndTime = seeded[seeded.length - 1].time;
-    // Preserve candles past seed end that arrived from snapshots before seed data was set
-    const postSeedCandles = this.candles.filter((c) => c.time > seedEndTime);
-    this.candles = postSeedCandles.length ? mergeCandles(seeded, postSeedCandles) : seeded;
+    // Preserve candles outside seed range that arrived from snapshots before seed data was set
+    const extraCandles = this.candles.filter((c) => c.time < seedStartTime || c.time > seedEndTime);
+    this.candles = extraCandles.length ? mergeCandles(seeded, extraCandles) : seeded;
     this.seededFromChartData = true;
+    this.seededHistoryStartTime = seedStartTime;
     this.seededHistoryEndTime = seedEndTime;
     this.signalStopAfterTime = null; // force recalculation for new candle set
     this.signalCrossingTime = null;
@@ -499,9 +544,14 @@ export class RealtimeTradingviewChartComponent
   }
 
   private shouldAcceptIncomingCandle(candle: Candle): boolean {
-    if (this.seededFromChartData && this.seededHistoryEndTime !== null && candle.time <= this.seededHistoryEndTime) return false;
     if (this.signalStopAfterTime !== null && candle.time > this.signalStopAfterTime) return false;
-    return true;
+    if (!this.seededFromChartData || this.seededHistoryEndTime === null) return true;
+    // Accept candles BEFORE the seed range (pre-seed history)
+    if (this.seededHistoryStartTime !== null && candle.time < this.seededHistoryStartTime) return true;
+    // Accept candles AFTER the seed range (continuation)
+    if (candle.time > this.seededHistoryEndTime) return true;
+    // Reject candles within the seed range (seed data is authoritative)
+    return false;
   }
 
   private shouldUseOneSecondAggregation(src: string): boolean {

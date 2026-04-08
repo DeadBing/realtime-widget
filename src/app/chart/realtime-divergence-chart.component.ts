@@ -134,6 +134,7 @@ export class RealtimeDivergenceChartComponent
   private articleSeedCandles: Candle[] = [];
   private indicatorWarmupCandles: Candle[] = [];
   private seededFromChartData = false;
+  private seededHistoryStartTime: number | null = null;
   private seededHistoryEndTime: number | null = null;
   private viewInitialized = false;
   private autoFitApplied = false;
@@ -271,14 +272,15 @@ export class RealtimeDivergenceChartComponent
     this.pricePrecisionApplied = false;
     this.tradeLevelsRendered = false;
     this.seededFromChartData = this.articleSeedCandles.length > 0;
+    this.seededHistoryStartTime = this.seededFromChartData ? this.articleSeedCandles[0].time : null;
     this.seededHistoryEndTime = this.seededFromChartData ? this.articleSeedCandles[this.articleSeedCandles.length - 1].time : null;
     this.signalStopAfterTime = null;
     this.signalCrossingTime = null;
     this.signalCompleted = false;
     if (this.seededFromChartData) {
-      // Preserve candles past seed end that arrived from snapshots before seed data was set
-      const postSeedCandles = this.candles.filter((c) => c.time > this.seededHistoryEndTime!);
-      this.candles = postSeedCandles.length ? mergeCandles([...this.articleSeedCandles], postSeedCandles) : [...this.articleSeedCandles];
+      // Preserve candles outside seed range that arrived from snapshots before seed data was set
+      const extraCandles = this.candles.filter((c) => c.time < this.seededHistoryStartTime! || c.time > this.seededHistoryEndTime!);
+      this.candles = extraCandles.length ? mergeCandles([...this.articleSeedCandles], extraCandles) : [...this.articleSeedCandles];
       this.error = null;
       this.autoFitApplied = false;
       this.followRealtime = true;
@@ -398,6 +400,48 @@ export class RealtimeDivergenceChartComponent
     const sym = normalizeSymbol(this.symbol);
     const tf = normalizeDisplayTimeframe(this.timeframe);
     const src = normalizeSource(this.source);
+    if (this.previewOnly) {
+      await this.teardownRealtime();
+      if (token !== this.syncToken) return;
+
+      if (!sym || !tf || !src) {
+        this.loading = false;
+        this.connected = false;
+        this.error = null;
+        this.renderMarketDataFull();
+        return;
+      }
+
+      this.loading = !this.candles.length;
+      this.error = null;
+      this.currentSymbol = sym;
+      this.currentSource = src;
+      this.hubTf = toHubTimeframe(tf);
+      this.tfSeconds = timeframeToSeconds(tf);
+      this.currentKey = `${sym}|${tf}|${src}|${this.hubTimeOffsetSeconds}|preview`;
+
+      try {
+        const connection = await this.hub.ensureConnected();
+        if (token !== this.syncToken) return;
+
+        this.connection = connection;
+        this.candleEventHandler = (evt: any) => this.handleCandleEvent(evt);
+        connection.on("candle_event", this.candleEventHandler);
+
+        // Single snapshot request — no SubscribeCandles, no refresh timer
+        await this.requestTfSnapshot(connection, src, this.initialTfSnapshotCount);
+      } catch (error) {
+        console.warn("Divergence preview snapshot fetch failed", error);
+      } finally {
+        if (token === this.syncToken) {
+          this.loading = false;
+          this.connected = false;
+          this.renderMarketDataFull();
+        }
+      }
+      return;
+    }
+
     if (!this.shouldRunRealtime() || !sym || !tf || !src) {
       await this.teardownRealtime();
       if (token !== this.syncToken) return;
@@ -485,6 +529,14 @@ export class RealtimeDivergenceChartComponent
       this.renderMarketDataFull();
       if (!this.tradeLevelsRendered) this.renderTradeLevels();
       if (!this.overlayLineSeries.length) this.renderTrendlines();
+
+      // In preview mode, clean up after receiving the snapshot (no ongoing stream)
+      if (this.previewOnly && this.connection && this.candleEventHandler) {
+        this.connection.off("candle_event", this.candleEventHandler);
+        this.candleEventHandler = null;
+        this.connection = null;
+        this.currentKey = "";
+      }
       return;
     }
 
@@ -745,20 +797,18 @@ export class RealtimeDivergenceChartComponent
   }
 
   private filterIncomingCandlesForSeededHistory(incoming: Candle[]): Candle[] {
-    if (!this.seededFromChartData || this.seededHistoryEndTime === null) {
-      return this.signalStopAfterTime !== null ? incoming.filter((c) => c.time <= this.signalStopAfterTime!) : incoming;
-    }
-    const overlapSeconds = Math.max(this.tfSeconds * 2, 1);
-    let filtered = incoming.filter((c) => c.time >= this.seededHistoryEndTime! - overlapSeconds);
-    if (this.signalStopAfterTime !== null) filtered = filtered.filter((c) => c.time <= this.signalStopAfterTime!);
-    return filtered;
+    return incoming.filter((c) => this.shouldAcceptIncomingCandle(c));
   }
 
   private shouldAcceptIncomingCandle(candle: Candle): boolean {
     if (this.signalStopAfterTime !== null && candle.time > this.signalStopAfterTime) return false;
     if (!this.seededFromChartData || this.seededHistoryEndTime === null) return true;
-    const overlapSeconds = Math.max(this.tfSeconds * 2, 1);
-    return candle.time >= this.seededHistoryEndTime - overlapSeconds;
+    // Accept candles BEFORE the seed range (pre-seed history)
+    if (this.seededHistoryStartTime !== null && candle.time < this.seededHistoryStartTime) return true;
+    // Accept candles AFTER the seed range (continuation)
+    if (candle.time > this.seededHistoryEndTime) return true;
+    // Reject candles within the seed range (seed data is authoritative)
+    return false;
   }
 
   private captureIndicatorWarmup(snapshot: Candle[]): void {
