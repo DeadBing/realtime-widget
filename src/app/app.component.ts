@@ -6,6 +6,7 @@ import { WidgetConfigService } from "./chart/widget-config.service";
 import { ChartTheme } from "./chart/chart-theme";
 
 type ChartMode = "pattern" | "divergence";
+type DivergenceIndicator = "stochastic" | "rsi" | "macd";
 
 @Component({
   selector: "app-root",
@@ -23,6 +24,7 @@ type ChartMode = "pattern" | "divergence";
         [source]="source"
         [active]="active"
         [previewOnly]="previewOnly"
+        [activeIndicator]="resolvedActiveIndicator"
         [height]="height"
         [initialCandles]="initialCandles"
         [trendLines]="trendLines"
@@ -82,6 +84,7 @@ export class AppComponent implements OnInit {
   entryPrice: string | null = null;
   signalStatus: number | null = null;
   chartMode: ChartMode | null = null;
+  activeIndicator: DivergenceIndicator | null = null;
 
   private readonly platformId = inject(PLATFORM_ID);
   private readonly isBrowser = isPlatformBrowser(this.platformId);
@@ -109,6 +112,14 @@ export class AppComponent implements OnInit {
     return "pattern";
   }
 
+  get resolvedActiveIndicator(): DivergenceIndicator | null {
+    if (this.activeIndicator) {
+      return this.activeIndicator;
+    }
+
+    return this.inferActiveIndicator(this.trendLines, this.objects);
+  }
+
   ngOnInit(): void {
     if (!this.isBrowser) {
       return;
@@ -125,6 +136,7 @@ export class AppComponent implements OnInit {
     this.previewOnly = params.get("previewOnly") === "true";
     this.height = Number(params.get("height")) || 500;
     this.chartMode = this.normalizeChartMode(params.get("chartMode"));
+    this.activeIndicator = this.normalizeActiveIndicator(params.get("activeIndicator"));
     this.takeProfit = params.get("takeProfit") || null;
     this.stopOrder = params.get("stopOrder") || null;
     this.entryPrice = params.get("entryPrice") || null;
@@ -202,6 +214,9 @@ export class AppComponent implements OnInit {
       if (data.chartMode !== undefined) {
         this.chartMode = this.normalizeChartMode(data.chartMode);
       }
+      if (data.activeIndicator !== undefined) {
+        this.activeIndicator = this.normalizeActiveIndicator(data.activeIndicator);
+      }
       if (data.initialCandles !== undefined) {
         this.initialCandles = data.initialCandles;
       }
@@ -257,6 +272,11 @@ export class AppComponent implements OnInit {
     const payloadTimeframe = `${normalized["period"] ?? normalized["timeframe"] ?? ""}`.trim();
     if (payloadTimeframe) {
       this.timeframe = payloadTimeframe;
+    }
+
+    const payloadActiveIndicator = this.normalizeActiveIndicator(normalized["activeIndicator"]);
+    if (payloadActiveIndicator) {
+      this.activeIndicator = payloadActiveIndicator;
     }
   }
 
@@ -360,5 +380,58 @@ export class AppComponent implements OnInit {
     }
 
     return null;
+  }
+
+  private normalizeActiveIndicator(value: unknown): DivergenceIndicator | null {
+    const normalized = `${value ?? ""}`.trim().toLowerCase();
+    if (normalized === "stochastic" || normalized === "stoch") {
+      return "stochastic";
+    }
+    if (normalized === "rsi") {
+      return "rsi";
+    }
+    if (normalized === "macd") {
+      return "macd";
+    }
+
+    return null;
+  }
+
+  private inferActiveIndicator(
+    trendLines: any[] | null,
+    objects: any[] | null,
+  ): DivergenceIndicator | null {
+    const source = Array.isArray(trendLines) && trendLines.length
+      ? trendLines
+      : Array.isArray(objects)
+        ? objects
+        : [];
+
+    if (!source.length) {
+      return null;
+    }
+
+    const matchedIndicators = new Set<DivergenceIndicator>();
+    for (const item of source) {
+      const normalized = `${item?.pane ?? item?.panel ?? item?.indicator ?? ""}`.trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+
+      if (normalized.includes("stoch")) {
+        matchedIndicators.add("stochastic");
+      } else if (normalized.includes("rsi")) {
+        matchedIndicators.add("rsi");
+      } else if (normalized.includes("macd")) {
+        matchedIndicators.add("macd");
+      }
+    }
+
+    if (matchedIndicators.size !== 1) {
+      return null;
+    }
+
+    const [matchedIndicator] = matchedIndicators;
+    return matchedIndicator ?? null;
   }
 }

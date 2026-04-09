@@ -74,6 +74,12 @@ type TrendLine = {
   endBarIdx?: number;
   endValue?: number;
 };
+type DivergenceIndicator = "stochastic" | "rsi" | "macd";
+type DivergenceAnnotationCache = {
+  key: string;
+  trendLines: any[] | null;
+  objects: any[] | null;
+};
 
 @Component({
   selector: "app-realtime-divergence-chart",
@@ -91,6 +97,7 @@ export class RealtimeDivergenceChartComponent
   @Input() source = "ohlc";
   @Input() active = false;
   @Input() previewOnly = false;
+  @Input() activeIndicator: DivergenceIndicator | null = null;
   @Input() height = 800;
   @Input() initialCandles: any[] | null = null;
   @Input() trendLines: any[] | null = null;
@@ -157,8 +164,21 @@ export class RealtimeDivergenceChartComponent
   private lastEmittedPrice: number | null = null;
   private readonly defaultRightOffsetBars = 3;
   private readonly realtimeFollowThresholdBars = 1.5;
+  private annotationCache: DivergenceAnnotationCache | null = null;
+  private usedCachedAnnotationsForLastRender = false;
+  private readonly trendlineDebugEnabled =
+    this.isBrowser &&
+    typeof window !== "undefined" &&
+    /^(localhost|127(?:\.\d{1,3}){3})$/i.test(window.location.hostname);
   private get tradingViewPalette() {
     return getPalette(this.theme);
+  }
+  private get resolvedActiveIndicator(): DivergenceIndicator | null {
+    return this.normalizeActiveIndicator(this.activeIndicator)
+      ?? this.inferActiveIndicatorFromPayload();
+  }
+  private get usesSingleIndicatorLayout(): boolean {
+    return this.resolvedActiveIndicator !== null;
   }
   private followRealtime = true;
   private suppressVisibleRangeTracking = false;
@@ -179,6 +199,10 @@ export class RealtimeDivergenceChartComponent
 
   ngOnChanges(changes: SimpleChanges): void {
     if (!this.viewInitialized || !this.isBrowser) return;
+    if (changes["activeIndicator"] && !changes["activeIndicator"].firstChange) {
+      this.recreateChart();
+      return;
+    }
     if (changes["theme"] && this.chartRef) {
       const pal = this.tradingViewPalette;
       this.chartRef.applyOptions({
@@ -188,7 +212,15 @@ export class RealtimeDivergenceChartComponent
     }
     if (changes["height"] && this.chartRef) this.chartRef.applyOptions({ height: this.height });
     if (changes["initialCandles"]) this.seedInitialCandles();
-    if (changes["trendLines"] || changes["objects"] || changes["timeframe"]) this.renderTrendlines();
+    if (
+      changes["trendLines"] ||
+      changes["objects"] ||
+      changes["timeframe"] ||
+      changes["symbol"] ||
+      changes["initialCandles"]
+    ) {
+      this.renderTrendlines();
+    }
     if (changes["entryPrice"] || changes["takeProfit"] || changes["stopOrder"] || changes["timeframe"] || changes["initialCandles"]) {
       this.tradeLevelsRendered = false;
       this.renderTradeLevels();
@@ -215,6 +247,7 @@ export class RealtimeDivergenceChartComponent
   private createChart(): void {
     if (!this.chartContainerRef?.nativeElement) return;
     const pal = this.tradingViewPalette;
+    const paneCount = this.usesSingleIndicatorLayout ? 2 : 4;
     const chart = createChart(this.chartContainerRef.nativeElement, {
       autoSize: true,
       height: this.height,
@@ -236,32 +269,54 @@ export class RealtimeDivergenceChartComponent
       crosshair: { vertLine: { width: 1, color: pal.crosshair }, horzLine: { width: 1, color: pal.crosshair } },
     });
 
-    while (chart.panes().length < 4) chart.addPane(true);
+    while (chart.panes().length < paneCount) chart.addPane(true);
     chart.panes()[0]?.setStretchFactor(9);
-    chart.panes()[1]?.setStretchFactor(2);
-    chart.panes()[2]?.setStretchFactor(2);
-    chart.panes()[3]?.setStretchFactor(2);
+    chart.panes()[1]?.setStretchFactor(3);
+    if (!this.usesSingleIndicatorLayout) {
+      chart.panes()[2]?.setStretchFactor(2);
+      chart.panes()[3]?.setStretchFactor(2);
+    }
 
     const oscaleProvider = () => ({ priceRange: { minValue: 0, maxValue: 100 } });
     this.priceSeries = chart.addSeries(CandlestickSeries, {
       upColor: pal.up, downColor: pal.down, borderUpColor: pal.up, borderDownColor: pal.down,
       wickUpColor: pal.up, wickDownColor: pal.down, lastValueVisible: true, priceLineVisible: false,
     }, 0);
-    this.stochasticKSeries = chart.addSeries(LineSeries, { color: pal.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, 1);
-    this.stochasticDSeries = chart.addSeries(LineSeries, { color: pal.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, 1);
-    this.rsiSeries = chart.addSeries(LineSeries, { color: pal.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, 2);
-    this.macdHistogramSeries = chart.addSeries(HistogramSeries, { base: 0, color: pal.macdPositive, lastValueVisible: false, priceLineVisible: false }, 3);
-    this.macdSignalSeries = chart.addSeries(LineSeries, { color: pal.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, 3);
-    this.macdLineSeries = chart.addSeries(LineSeries, { color: pal.macdMain, lineWidth: 2, lineStyle: LineStyle.Dotted, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, 3);
-
-    chart.priceScale("right", 1).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
-    chart.priceScale("right", 2).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
-    chart.priceScale("right", 3).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
+    if (!this.usesSingleIndicatorLayout || this.resolvedActiveIndicator === "stochastic") {
+      const stochasticPaneIndex = this.getIndicatorPaneIndex("stochastic");
+      this.stochasticKSeries = chart.addSeries(LineSeries, { color: pal.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, stochasticPaneIndex);
+      this.stochasticDSeries = chart.addSeries(LineSeries, { color: pal.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, stochasticPaneIndex);
+      chart.priceScale("right", stochasticPaneIndex).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
+    }
+    if (!this.usesSingleIndicatorLayout || this.resolvedActiveIndicator === "rsi") {
+      const rsiPaneIndex = this.getIndicatorPaneIndex("rsi");
+      this.rsiSeries = chart.addSeries(LineSeries, { color: pal.blue, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false, autoscaleInfoProvider: oscaleProvider }, rsiPaneIndex);
+      chart.priceScale("right", rsiPaneIndex).applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
+    }
+    if (!this.usesSingleIndicatorLayout || this.resolvedActiveIndicator === "macd") {
+      const macdPaneIndex = this.getIndicatorPaneIndex("macd");
+      this.macdHistogramSeries = chart.addSeries(HistogramSeries, { base: 0, color: pal.macdPositive, lastValueVisible: false, priceLineVisible: false }, macdPaneIndex);
+      this.macdSignalSeries = chart.addSeries(LineSeries, { color: pal.orange, lineWidth: 2, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, macdPaneIndex);
+      this.macdLineSeries = chart.addSeries(LineSeries, { color: pal.macdMain, lineWidth: 2, lineStyle: LineStyle.Dotted, lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false }, macdPaneIndex);
+      chart.priceScale("right", macdPaneIndex).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
+    }
 
     this.chartRef = chart;
     this.visibleLogicalRangeHandler = (range: LogicalRange | null) => this.handleVisibleLogicalRangeChange(range);
     chart.timeScale().subscribeVisibleLogicalRangeChange(this.visibleLogicalRangeHandler);
     this.createGuideLines();
+  }
+
+  private recreateChart(): void {
+    this.removeTrendlines();
+    this.removeTradeLevels();
+    this.removeGuideLines();
+    this.destroyChart();
+    this.autoFitApplied = false;
+    this.createChart();
+    this.renderMarketDataFull();
+    this.renderTrendlines();
+    this.renderTradeLevels();
   }
 
   // ── Seed ───────────────────────────────────────────────────────────────
@@ -526,9 +581,15 @@ export class RealtimeDivergenceChartComponent
       const filtered = this.filterIncomingCandlesForSeededHistory(snapshot);
       if (!filtered.length && this.candles.length) return;
       this.candles = this.candles.length ? mergeCandles(this.candles, filtered) : filtered;
+      if (this.previewOnly) {
+        // Preview receives a one-shot snapshot that can prepend older candles.
+        // Reset the viewport so the final candle set is focused around the
+        // divergence anchors instead of staying on stale logical indexes.
+        this.autoFitApplied = false;
+      }
       this.renderMarketDataFull();
       if (!this.tradeLevelsRendered) this.renderTradeLevels();
-      if (!this.overlayLineSeries.length) this.renderTrendlines();
+      this.renderTrendlines();
 
       // In preview mode, clean up after receiving the snapshot (no ongoing stream)
       if (this.previewOnly && this.connection && this.candleEventHandler) {
@@ -620,7 +681,7 @@ export class RealtimeDivergenceChartComponent
 
   /** Full render: price + all indicators. Used on snapshot, candle_close, seed. */
   private renderMarketDataFull(): void {
-    if (!this.priceSeries || !this.stochasticKSeries || !this.stochasticDSeries || !this.rsiSeries || !this.macdHistogramSeries || !this.macdSignalSeries || !this.macdLineSeries || !this.chartRef) return;
+    if (!this.priceSeries || !this.chartRef) return;
     const prevStopTime = this.signalStopAfterTime;
     if (this.signalCompleted && this.signalStopAfterTime === null) {
       this.tryComputeSignalStopTime();
@@ -634,12 +695,12 @@ export class RealtimeDivergenceChartComponent
     }
     if (!this.candles.length) {
       this.priceSeries.setData([]);
-      this.stochasticKSeries.setData([]);
-      this.stochasticDSeries.setData([]);
-      this.rsiSeries.setData([]);
-      this.macdHistogramSeries.setData([]);
-      this.macdSignalSeries.setData([]);
-      this.macdLineSeries.setData([]);
+      this.stochasticKSeries?.setData([]);
+      this.stochasticDSeries?.setData([]);
+      this.rsiSeries?.setData([]);
+      this.macdHistogramSeries?.setData([]);
+      this.macdSignalSeries?.setData([]);
+      this.macdLineSeries?.setData([]);
       return;
     }
     this.error = null;
@@ -650,17 +711,24 @@ export class RealtimeDivergenceChartComponent
     this.priceSeries.setData(this.candles.map((c) => ({ time: toUtc(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
 
     const indicatorCandles = this.getIndicatorInputCandles();
-    const stochastic = this.filterIndicatorSeriesToVisibleRange(calculateStochasticSeries(indicatorCandles, 5, 3, 3));
-    this.stochasticKSeries.setData(stochastic.map((p) => ({ time: toUtc(p.time), value: p.k })));
-    this.stochasticDSeries.setData(stochastic.map((p) => ({ time: toUtc(p.time), value: p.d })));
+    if (this.stochasticKSeries && this.stochasticDSeries) {
+      const stochastic = this.filterIndicatorSeriesToVisibleRange(calculateStochasticSeries(indicatorCandles, 5, 3, 3));
+      this.stochasticKSeries.setData(stochastic.map((p) => ({ time: toUtc(p.time), value: p.k })));
+      this.stochasticDSeries.setData(stochastic.map((p) => ({ time: toUtc(p.time), value: p.d })));
+    }
 
-    const rsi = this.filterIndicatorSeriesToVisibleRange(calculateRsiSeries(indicatorCandles, 14));
-    this.rsiSeries.setData(rsi.map((p) => ({ time: toUtc(p.time), value: p.value })));
+    if (this.rsiSeries) {
+      const rsi = this.filterIndicatorSeriesToVisibleRange(calculateRsiSeries(indicatorCandles, 14));
+      this.rsiSeries.setData(rsi.map((p) => ({ time: toUtc(p.time), value: p.value })));
+      this.publishIndicatorDebug("rsi", rsi);
+    }
 
-    const macd = this.filterIndicatorSeriesToVisibleRange(calculateMacdSeries(indicatorCandles, 12, 29, 9));
-    this.macdHistogramSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.histogram, color: p.histogram >= 0 ? this.tradingViewPalette.macdPositive : this.tradingViewPalette.macdNegative })));
-    this.macdSignalSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.signal })));
-    this.macdLineSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.macd })));
+    if (this.macdHistogramSeries && this.macdSignalSeries && this.macdLineSeries) {
+      const macd = this.filterIndicatorSeriesToVisibleRange(calculateMacdSeries(indicatorCandles, 12, 29, 9));
+      this.macdHistogramSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.histogram, color: p.histogram >= 0 ? this.tradingViewPalette.macdPositive : this.tradingViewPalette.macdNegative })));
+      this.macdSignalSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.signal })));
+      this.macdLineSeries.setData(macd.map((p) => ({ time: toUtc(p.time), value: p.macd })));
+    }
 
     if (!this.tradeLevelsRendered) {
       this.renderTradeLevels();
@@ -712,16 +780,36 @@ export class RealtimeDivergenceChartComponent
 
   private renderTrendlines(): void {
     if (!this.chartRef) return;
+    const normalizedLines = this.normalizeTrendLines();
     this.removeTrendlines();
-    for (const line of this.normalizeTrendLines()) {
+    const debugLines: Array<Record<string, unknown>> = [];
+    for (const line of normalizedLines) {
+      const paneIndex = this.mapTrendLinePaneIndexForCurrentLayout(line.paneIndex);
+      const lineData = this.buildTrendLineData(line);
+      if (this.trendlineDebugEnabled) {
+        debugLines.push({
+          originalPaneIndex: line.paneIndex,
+          mappedPaneIndex: paneIndex,
+          rayRight: line.rayRight,
+          p1: line.p1,
+          p2: line.p2,
+          firstPoint: lineData[0] ?? null,
+          lastPoint: lineData[lineData.length - 1] ?? null,
+          pointsCount: lineData.length,
+        });
+      }
+      if (paneIndex === null) {
+        continue;
+      }
       const series = this.chartRef.addSeries(LineSeries, {
         color: line.color, lineWidth: line.width,
         lineStyle: line.style === "dot" ? LineStyle.Dotted : LineStyle.Solid,
         lastValueVisible: false, priceLineVisible: false, pointMarkersVisible: false,
-      }, line.paneIndex);
-      series.setData(this.buildTrendLineData(line));
+      }, paneIndex);
+      series.setData(lineData);
       this.overlayLineSeries.push(series);
     }
+    this.publishTrendlineDebug(debugLines);
   }
 
   private renderTradeLevels(): void {
@@ -775,13 +863,18 @@ export class RealtimeDivergenceChartComponent
   }
 
   private createGuideLines(): void {
-    if (!this.stochasticKSeries || !this.rsiSeries || !this.macdSignalSeries) return;
     this.removeGuideLines();
-    this.bindGuideLine(this.stochasticKSeries, 80);
-    this.bindGuideLine(this.stochasticKSeries, 20);
-    this.bindGuideLine(this.rsiSeries, 70);
-    this.bindGuideLine(this.rsiSeries, 30);
-    this.bindGuideLine(this.macdSignalSeries, 0);
+    if (this.stochasticKSeries) {
+      this.bindGuideLine(this.stochasticKSeries, 80);
+      this.bindGuideLine(this.stochasticKSeries, 20);
+    }
+    if (this.rsiSeries) {
+      this.bindGuideLine(this.rsiSeries, 70);
+      this.bindGuideLine(this.rsiSeries, 30);
+    }
+    if (this.macdSignalSeries) {
+      this.bindGuideLine(this.macdSignalSeries, 0);
+    }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -794,6 +887,87 @@ export class RealtimeDivergenceChartComponent
   private bindPriceLine(series: AnySeries, options: Record<string, unknown>): void {
     const line = (series as any).createPriceLine(options);
     this.priceLines.push({ series, line });
+  }
+
+  private getIndicatorPaneIndex(indicator: DivergenceIndicator): number {
+    if (this.usesSingleIndicatorLayout) {
+      return 1;
+    }
+
+    return this.getLegacyIndicatorPaneIndex(indicator);
+  }
+
+  private getLegacyIndicatorPaneIndex(indicator: DivergenceIndicator): number {
+    switch (indicator) {
+      case "stochastic":
+        return 1;
+      case "rsi":
+        return 2;
+      case "macd":
+        return 3;
+    }
+  }
+
+  private mapTrendLinePaneIndexForCurrentLayout(paneIndex: number): number | null {
+    if (!this.usesSingleIndicatorLayout) {
+      return paneIndex;
+    }
+
+    if (paneIndex === 0) {
+      return 0;
+    }
+
+    const activePaneIndex = this.getLegacyIndicatorPaneIndex(this.resolvedActiveIndicator!);
+    return paneIndex === activePaneIndex ? 1 : null;
+  }
+
+  private normalizeActiveIndicator(value: unknown): DivergenceIndicator | null {
+    const normalized = `${value ?? ""}`.trim().toLowerCase();
+    if (normalized === "stochastic" || normalized === "stoch") {
+      return "stochastic";
+    }
+    if (normalized === "rsi") {
+      return "rsi";
+    }
+    if (normalized === "macd") {
+      return "macd";
+    }
+
+    return null;
+  }
+
+  private inferActiveIndicatorFromPayload(): DivergenceIndicator | null {
+    const annotationPayload = this.resolveTrendLinePayload();
+    const source = annotationPayload.trendLines.length
+      ? annotationPayload.trendLines
+      : annotationPayload.objects;
+
+    if (!source.length) {
+      return null;
+    }
+
+    const matchedIndicators = new Set<DivergenceIndicator>();
+    for (const item of source) {
+      const normalized = `${item?.pane ?? item?.panel ?? item?.indicator ?? ""}`.trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+
+      if (normalized.includes("stoch")) {
+        matchedIndicators.add("stochastic");
+      } else if (normalized.includes("rsi")) {
+        matchedIndicators.add("rsi");
+      } else if (normalized.includes("macd")) {
+        matchedIndicators.add("macd");
+      }
+    }
+
+    if (matchedIndicators.size !== 1) {
+      return null;
+    }
+
+    const [matchedIndicator] = matchedIndicators;
+    return matchedIndicator ?? null;
   }
 
   private filterIncomingCandlesForSeededHistory(incoming: Candle[]): Candle[] {
@@ -935,7 +1109,10 @@ export class RealtimeDivergenceChartComponent
   // ── Trendline normalization ────────────────────────────────────────────
 
   private normalizeTrendLines(): TrendLine[] {
-    const source = Array.isArray(this.trendLines) && this.trendLines.length ? this.trendLines : Array.isArray(this.objects) ? this.objects : [];
+    const annotationPayload = this.resolveTrendLinePayload();
+    const source = annotationPayload.trendLines.length
+      ? annotationPayload.trendLines
+      : annotationPayload.objects;
     const normalized = source
       .map((l, i) => this.normalizeTrendLine(l, i))
       .filter((l: TrendLine | null): l is TrendLine => !!l);
@@ -1021,6 +1198,9 @@ export class RealtimeDivergenceChartComponent
     if (indicator.includes("stoch")) return 1;
     if (indicator.includes("rsi")) return 2;
     if (indicator.includes("macd")) return 3;
+    if (this.resolvedActiveIndicator) {
+      return this.getLegacyIndicatorPaneIndex(this.resolvedActiveIndicator);
+    }
     return lineIndex === 0 ? 0 : 2;
   }
 
@@ -1224,5 +1404,78 @@ export class RealtimeDivergenceChartComponent
       if (Number.isFinite(numeric)) return numeric;
     }
     return null;
+  }
+
+  private publishTrendlineDebug(lines: Array<Record<string, unknown>>): void {
+    if (!this.trendlineDebugEnabled || typeof window === "undefined") {
+      return;
+    }
+
+    const payload = {
+      symbol: this.symbol,
+      timeframe: this.timeframe,
+      activeIndicator: this.resolvedActiveIndicator,
+      usesSingleIndicatorLayout: this.usesSingleIndicatorLayout,
+      usedCachedAnnotations: this.usedCachedAnnotationsForLastRender,
+      candlesCount: this.candles.length,
+      firstCandleTime: this.candles[0]?.time ?? null,
+      lastCandleTime: this.candles[this.candles.length - 1]?.time ?? null,
+      lines,
+    };
+
+    (window as Window & { __rtwTrendlines?: unknown }).__rtwTrendlines = payload;
+  }
+
+  private publishIndicatorDebug(name: "rsi", points: Array<{ time: number; value: number }>): void {
+    if (!this.trendlineDebugEnabled || typeof window === "undefined") {
+      return;
+    }
+
+    const payload = {
+      symbol: this.symbol,
+      timeframe: this.timeframe,
+      activeIndicator: this.resolvedActiveIndicator,
+      lastPoints: points.slice(-5),
+    };
+
+    (window as Window & { __rtwIndicators?: Record<string, unknown> }).__rtwIndicators = {
+      ...((window as Window & { __rtwIndicators?: Record<string, unknown> }).__rtwIndicators ?? {}),
+      [name]: payload,
+    };
+  }
+
+  private resolveTrendLinePayload(): { trendLines: any[]; objects: any[] } {
+    const cacheKey = this.getAnnotationCacheKey();
+    const currentTrendLines = Array.isArray(this.trendLines) ? this.trendLines : [];
+    const currentObjects = Array.isArray(this.objects) ? this.objects : [];
+    const hasCurrentAnnotations = currentTrendLines.length > 0 || currentObjects.length > 0;
+
+    if (hasCurrentAnnotations) {
+      this.annotationCache = {
+        key: cacheKey,
+        trendLines: currentTrendLines.length ? [...currentTrendLines] : null,
+        objects: currentObjects.length ? [...currentObjects] : null,
+      };
+      this.usedCachedAnnotationsForLastRender = false;
+      return { trendLines: currentTrendLines, objects: currentObjects };
+    }
+
+    if (this.annotationCache?.key === cacheKey) {
+      this.usedCachedAnnotationsForLastRender = true;
+      return {
+        trendLines: Array.isArray(this.annotationCache.trendLines) ? this.annotationCache.trendLines : [],
+        objects: Array.isArray(this.annotationCache.objects) ? this.annotationCache.objects : [],
+      };
+    }
+
+    this.annotationCache = null;
+    this.usedCachedAnnotationsForLastRender = false;
+    return { trendLines: [], objects: [] };
+  }
+
+  private getAnnotationCacheKey(): string {
+    const normalizedSymbol = normalizeSymbol(this.symbol);
+    const normalizedTimeframe = normalizeDisplayTimeframe(this.timeframe) || `${this.timeframe ?? ""}`.trim().toUpperCase();
+    return `${normalizedSymbol}|${normalizedTimeframe}`;
   }
 }
