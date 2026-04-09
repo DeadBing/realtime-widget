@@ -19,6 +19,7 @@ Supported query params:
 - `active` (optional): `true|false`, default `true`
 - `height` (optional): number, default `500`
 - `chartMode` (optional): `pattern|divergence`; if omitted, widget auto-detects divergence mode from `trendLines` or indicator-tagged line payloads
+- `activeIndicator` (optional): `stochastic|rsi|macd`; when set in divergence mode, the widget renders only `Price + active indicator`
 - `takeProfit` (optional)
 - `stopOrder` (optional)
 - `entryPrice` (optional)
@@ -52,6 +53,7 @@ Instead of putting large `initialCandles`/`objects` into URL (can cause HTTP 431
 				active: true,
 				height: 500,
 				chartMode: "divergence",
+				activeIndicator: "rsi",
 				initialCandles: [],
 				objects: [],
 				trendLines: [],
@@ -72,6 +74,11 @@ Use divergence mode when the payload contains oscillator panes and `trendLines` 
 - price pane includes candles, trade levels, and price-side divergence line
 - indicator panes calculate values from the same seeded candle timestamps, then render pane-specific divergence lines
 - realtime continuation stays on the existing pattern component for now; divergence mode is split into a dedicated component to avoid regressions in the working triangle renderer
+
+When `activeIndicator` is provided, divergence mode switches to a compact layout:
+
+- 2 panes: `Price -> active indicator`
+- only the selected oscillator series and its divergence line remain visible
 
 ## Angular Host Wrapper Note
 
