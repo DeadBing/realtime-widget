@@ -288,10 +288,9 @@ export function buildFocusedLogicalRange(
 
   const anchorSpan = Math.max(1, focusEndBar - focusStartBar + 1);
   const paddedSpan = anchorSpan + leftPaddingBars + rightPaddingBars;
-  const desiredVisibleBars = Math.min(
-    Math.max(paddedSpan, minVisibleBars),
-    maxVisibleBars,
-  );
+  const desiredVisibleBars = normalizedAnchors.length
+    ? Math.max(paddedSpan, minVisibleBars)
+    : Math.min(Math.max(paddedSpan, minVisibleBars), maxVisibleBars);
 
   const logicalTo = Math.max(
     focusEndBar + rightPaddingBars + rightOffsetBars,
